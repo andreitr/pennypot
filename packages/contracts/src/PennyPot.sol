@@ -392,7 +392,7 @@ contract PennyPot {
         return (soldOf[ticketId], winningsPerShareOf[ticketId], claimedOf[ticketId]);
     }
 
-    function getMyShares(uint256 ticketId, address user) external view returns (uint8) {
+    function getTicketShares(uint256 ticketId, address user) external view returns (uint8) {
         return shares[ticketId][user];
     }
 

@@ -109,7 +109,7 @@ Users:
 
 - `activeTicketId()`, `activeDeadline()` — what's selling and until when.
 - `getTicket(ticketId)` → `(sold, winningsPerShare, claimed)`.
-- `getMyShares(ticketId, addr)`.
+- `getTicketShares(ticketId, addr)`.
 - `getDrawingTicketIds(drawingId)`, `getDrawingTicketCount(drawingId)` — enumerate a
   drawing's tickets without an off-chain index.
 - `getPendingWinnings(addr, ticketIds[])` — claimable USDC across explicit tickets.
