@@ -58,12 +58,14 @@ contract PennyPot {
     ///         that has no time to resell its shares.
     uint256 public constant MIN_SELLING_WINDOW = 1 hours;
 
-    /// @notice Single-element referrer-split sentinel passed to Megapot's buyTickets.
-    ///         Megapot validates split sums; using a single 100% weight is simplest.
-    uint256 internal constant REFERRAL_SPLIT_FULL = 10_000;
+    /// @notice Single-element referrer-split weight passed to Megapot's buyTickets.
+    ///         Megapot's `_referralSplit` is in 1e18 scale and must sum to exactly 1e18,
+    ///         so a single 100% referrer uses the full 1e18 weight.
+    uint256 internal constant REFERRAL_SPLIT_FULL = 1e18;
 
-    /// @notice Identifier passed to Megapot for analytics tagging.
-    bytes32 public constant SOURCE = keccak256("pennypot.v1");
+    /// @notice Integration source tag passed to Megapot for on-chain analytics.
+    ///         Megapot convention: keccak256 of the app name.
+    bytes32 public constant SOURCE = keccak256("pennypot");
 
     // -----------------------------------------------------------------------
     // Immutables

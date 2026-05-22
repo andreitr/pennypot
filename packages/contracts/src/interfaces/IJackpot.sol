@@ -33,8 +33,8 @@ interface IJackpot {
     /// @param _tickets       Array of ticket specs; ≤ 10 entries.
     /// @param _recipient     Address that receives the ticket NFTs and can later claim winnings.
     /// @param _referrers     Up to `maxReferrers` addresses earning the referral fee + win share.
-    /// @param _referralSplit Weights matching `_referrers`, summed to a fixed total.
-    /// @param _source        Arbitrary tag for analytics (e.g. keccak256("pennypot.v1")).
+    /// @param _referralSplit Weights matching `_referrers`, in 1e18 scale, summing to exactly 1e18.
+    /// @param _source        Analytics tag; Megapot convention is keccak256 of the app name, e.g. keccak256("pennypot").
     /// @return ticketIds     The user-facing ticket IDs (one per entry in _tickets).
     function buyTickets(
         Ticket[] calldata _tickets,
