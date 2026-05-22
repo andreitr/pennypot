@@ -37,10 +37,29 @@ contract PennyPotTest is Test {
         _fund(carol, 1_000_000);
     }
 
+    // ----- helpers -------------------------------------------------------
+
     function _fund(address user, uint256 amount) internal {
         usdc.mint(user, amount);
         vm.prank(user);
         usdc.approve(address(pot), type(uint256).max);
+    }
+
+    /// @dev Crank a fresh ticket and return its Megapot ticket id.
+    function _buyTicket() internal returns (uint256 id) {
+        pot.buyNextTicket();
+        id = pot.activeTicketId();
+    }
+
+    function _ids(uint256 a) internal pure returns (uint256[] memory arr) {
+        arr = new uint256[](1);
+        arr[0] = a;
+    }
+
+    function _ids(uint256 a, uint256 b) internal pure returns (uint256[] memory arr) {
+        arr = new uint256[](2);
+        arr[0] = a;
+        arr[1] = b;
     }
 
     // ----- Construction --------------------------------------------------
@@ -56,11 +75,9 @@ contract PennyPotTest is Test {
         new PennyPot(address(usdc), address(jackpot), feeReceiver, address(0));
     }
 
-    function test_constructor_reverts_if_feeReceiver_equals_contract() public {
-        // Hard to literally pass `address(this)` for a not-yet-deployed contract,
-        // but we can prove the invariant by trying to recreate with a known address.
-        // Since the future contract address is deterministic, we'd need create2;
-        // simpler: just verify the existing feeReceiver != address(pot).
+    function test_constructor_reverts_if_feeReceiver_equals_contract() public view {
+        // The future contract address is hard to pre-compute here; assert the invariant
+        // holds for the deployed instance.
         assertTrue(pot.feeReceiver() != address(pot));
     }
 
@@ -69,202 +86,192 @@ contract PennyPotTest is Test {
     function test_happyPath_ticketFillsLosesNoWinnings() public {
         uint256 drawingId = jackpot.currentDrawingId();
 
-        // Open drawing + buy first ticket from reserve.
-        pot.buyNextTicket(drawingId);
-
-        // 100 shares sold by alice+bob (50 each).
+        // Buy first ticket from reserve; 100 shares sold by alice+bob (50 each).
+        uint256 id1 = _buyTicket();
         vm.prank(alice);
-        pot.buyShares(drawingId, 50);
+        pot.buyShares(id1, 50);
         vm.prank(bob);
-        pot.buyShares(drawingId, 50);
+        pot.buyShares(id1, 50);
 
-        // Ticket filled => nextTicketQueued.
-        (PennyPot.DrawingState state,,, bool nextQ,) = pot.getDrawing(drawingId);
-        assertTrue(nextQ, "should be queued");
-        assertEq(uint256(state), uint256(PennyPot.DrawingState.Selling));
-
-        // Reserve returned to seeded value (one ticket bought, fully replenished).
+        // Ticket filled; reserve fully replenished.
+        (uint8 sold,,) = pot.getTicket(id1);
+        assertEq(sold, 100);
         assertEq(pot.reservePool(), SEED_RESERVE);
 
-        // Now buy a second ticket. carol takes 100 shares.
-        pot.buyNextTicket(drawingId);
+        // Roll to a second ticket; carol takes 100 shares.
+        uint256 id2 = _buyTicket();
+        assertTrue(id2 != id1);
         vm.prank(carol);
-        pot.buyShares(drawingId, 100);
+        pot.buyShares(id2, 100);
 
-        // Reserve still at seed: 2 tickets bought, 2 tickets' worth of shares sold.
+        // Reserve still at seed; both tickets recorded under the drawing.
         assertEq(pot.reservePool(), SEED_RESERVE);
-        assertEq(pot.ticketCount(drawingId), 2);
+        assertEq(pot.getDrawingTicketCount(drawingId), 2);
 
-        // Time-travel past drawingTime; settle on the Megapot side; claim on our side.
+        // Time-travel past drawingTime; settle on Megapot; claim on our side.
         vm.warp(block.timestamp + DRAWING_DURATION + 1);
-        pot.finalizeDrawing(drawingId);
         jackpot.settleDrawing();
-        pot.claimDrawing(drawingId);
+        pot.claim(_ids(id1, id2));
 
         // All tickets in tier 0 (lose) by default => no winnings.
-        assertEq(pot.getPendingWinnings(drawingId, alice), 0);
-        assertEq(pot.getPendingWinnings(drawingId, bob), 0);
-        assertEq(pot.getPendingWinnings(drawingId, carol), 0);
+        assertEq(pot.getPendingWinningsForDrawing(drawingId, alice), 0);
+        assertEq(pot.getPendingWinningsForDrawing(drawingId, bob), 0);
+        assertEq(pot.getPendingWinningsForDrawing(drawingId, carol), 0);
 
         // Withdraw reverts since nothing owed.
         vm.expectRevert(PennyPot.NothingToWithdraw.selector);
         vm.prank(alice);
-        pot.withdrawWinnings(drawingId);
+        pot.withdraw(_ids(id1, id2));
     }
 
     // ----- Happy path: winning ticket, pro-rata payout -------------------
 
     function test_happyPath_winningTicket_proRataAcrossShareholders() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-
-        pot.buyNextTicket(drawingId);
+        uint256 id1 = _buyTicket();
         vm.prank(alice);
-        pot.buyShares(drawingId, 25); // alice owns 25%
+        pot.buyShares(id1, 25); // alice owns 25%
         vm.prank(bob);
-        pot.buyShares(drawingId, 75); // bob owns 75%; ticket now full.
+        pot.buyShares(id1, 75); // bob owns 75%; ticket now full.
 
-        // Configure: ticket #1 lands in tier 11 (jackpot tier), payout = 1000 USDC.
-        // (NB: Megapot ticket id 1 is the first NFT minted; we own it.)
-        uint256 megaTicketId = 1;
-        jackpot.setTicketTier(drawingId, megaTicketId, 11);
-        jackpot.setTierPayout(drawingId, 11, 1000_000_000); // 1000 USDC
+        // Ticket lands in tier 11 (jackpot tier), payout = 1000 USDC.
+        jackpot.setTicketTier(jackpot.currentDrawingId(), id1, 11);
+        jackpot.setTierPayout(jackpot.currentDrawingId(), 11, 1000_000_000);
 
-        // Settle.
+        // Settle + fund + claim.
         vm.warp(block.timestamp + DRAWING_DURATION + 1);
-        pot.finalizeDrawing(drawingId);
-        // Fund jackpot to pay winnings.
         usdc.mint(address(jackpot), 1000_000_000);
         jackpot.settleDrawing();
-        pot.claimDrawing(drawingId);
+        pot.claim(_ids(id1));
 
-        // Ticket was 100/100 sold => winningsPerShare = 1000_000_000 / 100 = 10_000_000.
-        // Alice: 25 * 10_000_000 = 250 USDC. Bob: 75 * 10_000_000 = 750 USDC.
-        assertEq(pot.getPendingWinnings(drawingId, alice), 250_000_000);
-        assertEq(pot.getPendingWinnings(drawingId, bob), 750_000_000);
+        // winningsPerShare = 1000_000_000 / 100 = 10_000_000.
+        assertEq(pot.getPendingWinnings(alice, _ids(id1)), 250_000_000);
+        assertEq(pot.getPendingWinnings(bob, _ids(id1)), 750_000_000);
 
-        // Withdraw both; each balance rises by exactly the winnings owed. (Each user
-        // keeps the unspent remainder of their initial $1 funding from setUp.)
+        // Withdraw both; each balance rises by exactly the winnings owed.
         uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
-        pot.withdrawWinnings(drawingId);
+        pot.withdraw(_ids(id1));
         assertEq(usdc.balanceOf(alice) - aliceBefore, 250_000_000);
 
         uint256 bobBefore = usdc.balanceOf(bob);
         vm.prank(bob);
-        pot.withdrawWinnings(drawingId);
+        pot.withdraw(_ids(id1));
         assertEq(usdc.balanceOf(bob) - bobBefore, 750_000_000);
 
         // Double-withdraw reverts (shares zeroed).
         vm.expectRevert(PennyPot.NothingToWithdraw.selector);
         vm.prank(alice);
-        pot.withdrawWinnings(drawingId);
+        pot.withdraw(_ids(id1));
     }
 
     // ----- Undersubscription amplifies payout per share -------------------
 
     function test_undersubscription_amplifiesPayoutPerShare() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-
-        pot.buyNextTicket(drawingId);
+        uint256 id1 = _buyTicket();
         // Only 10 shares sold (10%).
         vm.prank(alice);
-        pot.buyShares(drawingId, 10);
+        pot.buyShares(id1, 10);
 
-        // Ticket wins 1000 USDC.
-        jackpot.setTicketTier(drawingId, 1, 11);
-        jackpot.setTierPayout(drawingId, 11, 1000_000_000);
+        jackpot.setTicketTier(jackpot.currentDrawingId(), id1, 11);
+        jackpot.setTierPayout(jackpot.currentDrawingId(), 11, 1000_000_000);
 
         vm.warp(block.timestamp + DRAWING_DURATION + 1);
-        pot.finalizeDrawing(drawingId);
         usdc.mint(address(jackpot), 1000_000_000);
         jackpot.settleDrawing();
-        pot.claimDrawing(drawingId);
+        pot.claim(_ids(id1));
 
         // winningsPerShare = 1000_000_000 / 10 = 100_000_000 (100 USDC per share!)
-        // Alice owns 10 shares -> 1000 USDC owed. Her 0.10 USDC bought all of it.
-        assertEq(pot.getPendingWinnings(drawingId, alice), 1000_000_000);
+        // Alice owns 10 shares -> 1000 USDC owed; her 0.10 USDC bought all of it.
+        assertEq(pot.getPendingWinnings(alice, _ids(id1)), 1000_000_000);
 
-        // Alice paid 0.10 USDC for 10 shares and is owed 1000 USDC; her balance rises
-        // by exactly the winnings (the rest of her initial $1 funding stays untouched).
         uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
-        pot.withdrawWinnings(drawingId);
+        pot.withdraw(_ids(id1));
         assertEq(usdc.balanceOf(alice) - aliceBefore, 1000_000_000);
     }
 
     // ----- Frontrun protection: MIN_SELLING_WINDOW ------------------------
 
     function test_buyNextTicket_revertsIfTooCloseToDrawingTime() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-
-        pot.buyNextTicket(drawingId);
+        uint256 id1 = _buyTicket();
         vm.prank(alice);
-        pot.buyShares(drawingId, 100); // Fill ticket.
+        pot.buyShares(id1, 100); // Fill ticket.
+
+        uint64 drawingTime = pot.activeDeadline();
 
         // Warp to 30 minutes before drawingTime (inside the 1-hour buffer).
-        (, uint64 drawingTime,,,) = pot.getDrawing(drawingId);
         vm.warp(uint256(drawingTime) - 30 minutes);
-
         vm.expectRevert(PennyPot.PastSellingWindow.selector);
-        pot.buyNextTicket(drawingId);
+        pot.buyNextTicket();
 
-        // Sanity: works at exactly 1h + 1s before drawing close.
+        // Works at exactly 1h + 1s before drawing close.
         vm.warp(uint256(drawingTime) - (1 hours + 1));
-        pot.buyNextTicket(drawingId);
+        pot.buyNextTicket();
     }
 
     // ----- buyShares: state guards ---------------------------------------
 
     function test_buyShares_revertsBeforeTicketBought() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-        // No buyNextTicket called yet; drawing state == None.
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                PennyPot.WrongDrawingState.selector, PennyPot.DrawingState.Selling, PennyPot.DrawingState.None
-            )
-        );
+        // No buyNextTicket yet => no active ticket.
+        vm.expectRevert(PennyPot.NoActiveTicket.selector);
         vm.prank(alice);
-        pot.buyShares(drawingId, 1);
+        pot.buyShares(1, 1);
     }
 
-    function test_buyShares_revertsWhenTicketQueued() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-        pot.buyNextTicket(drawingId);
+    function test_buyShares_revertsWhenFullAndOnRollover() public {
+        uint256 id1 = _buyTicket();
         vm.prank(alice);
-        pot.buyShares(drawingId, 100); // Fills ticket.
+        pot.buyShares(id1, 100); // Fills ticket.
 
-        // Now nextTicketQueued = true. buyShares should revert.
-        vm.expectRevert(PennyPot.NoActiveTicket.selector);
+        // Buying more of a full ticket exceeds capacity.
+        vm.expectRevert(PennyPot.InvalidCount.selector);
         vm.prank(bob);
-        pot.buyShares(drawingId, 1);
+        pot.buyShares(id1, 1);
+
+        // Roll to the next ticket; the old id is no longer the active one.
+        uint256 id2 = _buyTicket();
+        vm.expectRevert(abi.encodeWithSelector(PennyPot.UnexpectedTicket.selector, id2, id1));
+        vm.prank(bob);
+        pot.buyShares(id1, 1);
+
+        // Buying the new active ticket works.
+        vm.prank(bob);
+        pot.buyShares(id2, 1);
     }
 
     function test_buyShares_revertsIfOversold() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-        pot.buyNextTicket(drawingId);
+        uint256 id1 = _buyTicket();
         vm.prank(alice);
-        pot.buyShares(drawingId, 99);
+        pot.buyShares(id1, 99);
 
         // 99 + 2 > 100.
         vm.expectRevert(PennyPot.InvalidCount.selector);
         vm.prank(bob);
-        pot.buyShares(drawingId, 2);
+        pot.buyShares(id1, 2);
 
         // 99 + 1 == 100 works.
         vm.prank(bob);
-        pot.buyShares(drawingId, 1);
+        pot.buyShares(id1, 1);
     }
 
     function test_buyShares_revertsAfterDrawingTime() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-        pot.buyNextTicket(drawingId);
+        uint256 id1 = _buyTicket();
         vm.warp(block.timestamp + DRAWING_DURATION + 1);
         vm.expectRevert(PennyPot.PastSellingWindow.selector);
         vm.prank(alice);
-        pot.buyShares(drawingId, 1);
+        pot.buyShares(id1, 1);
     }
 
-    // ----- Reserve drain -------------------------------------------------
+    // ----- buyNextTicket: cranking guards --------------------------------
+
+    function test_buyNextTicket_revertsIfActiveStillSelling() public {
+        uint256 id1 = _buyTicket();
+        vm.prank(alice);
+        pot.buyShares(id1, 50); // not full, drawing still open
+
+        vm.expectRevert(PennyPot.TicketStillSelling.selector);
+        pot.buyNextTicket();
+    }
 
     function test_buyNextTicket_revertsIfReserveTooLow() public {
         // Drain the reserve via owner withdrawal.
@@ -272,37 +279,72 @@ contract PennyPotTest is Test {
         pot.withdrawReserveSurplus(SEED_RESERVE, owner);
         assertEq(pot.reservePool(), 0);
 
-        uint256 drawingId = jackpot.currentDrawingId();
         vm.expectRevert(abi.encodeWithSelector(PennyPot.ReserveTooLowForTicket.selector, 0, 1_000_000));
-        pot.buyNextTicket(drawingId);
+        pot.buyNextTicket();
     }
 
-    // ----- finalizeDrawing & claimDrawing --------------------------------
+    // ----- Rolling across drawing boundaries -----------------------------
 
-    function test_finalizeDrawing_revertsBeforeDrawingTime() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-        pot.buyNextTicket(drawingId);
-        vm.expectRevert(PennyPot.DrawingTimeNotReached.selector);
-        pot.finalizeDrawing(drawingId);
-    }
+    function test_rollover_acrossDrawings() public {
+        uint256 d1 = jackpot.currentDrawingId();
+        uint256 id1 = _buyTicket(); // drawing 1
+        vm.prank(alice);
+        pot.buyShares(id1, 40); // undersold
 
-    function test_claimDrawing_revertsIfMegapotNotSettled() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-        pot.buyNextTicket(drawingId);
+        // Drawing 1 closes and settles; Megapot advances to drawing 2.
         vm.warp(block.timestamp + DRAWING_DURATION + 1);
-        pot.finalizeDrawing(drawingId);
+        jackpot.settleDrawing();
+        uint256 d2 = jackpot.currentDrawingId();
+        assertTrue(d2 != d1);
 
-        // Megapot not yet settled.
-        vm.expectRevert(PennyPot.DrawingNotSettled.selector);
-        pot.claimDrawing(drawingId);
+        // The undersold ticket is closed (deadline passed) => buyNextTicket rolls into
+        // the new drawing without any on-chain "finalize".
+        uint256 id2 = _buyTicket(); // drawing 2
+        assertTrue(id2 != id1);
+        vm.prank(bob);
+        pot.buyShares(id2, 10);
+
+        // Each drawing tracks only its own tickets.
+        assertEq(pot.getDrawingTicketCount(d1), 1);
+        assertEq(pot.getDrawingTicketCount(d2), 1);
+        assertEq(pot.getDrawingTicketIds(d1)[0], id1);
+        assertEq(pot.getDrawingTicketIds(d2)[0], id2);
     }
 
-    function test_claimDrawing_zeroTickets_settlesCleanly() public {
-        // Open the drawing but never buy any tickets... actually buyNextTicket buys
-        // ticket #0 immediately. So we need to drain reserve first, attempt open,
-        // and bypass. Skipping this edge case in v1 since the drawing only opens
-        // via buyNextTicket which buys a ticket.
-        // Document as a known limitation: a drawing can never have 0 tickets in v1.
+    // ----- claim ---------------------------------------------------------
+
+    function test_claim_revertsIfMegapotNotSettled() public {
+        uint256 id1 = _buyTicket();
+        vm.warp(block.timestamp + DRAWING_DURATION + 1);
+
+        // Megapot not settled => its claimWinnings reverts.
+        vm.expectRevert(bytes("not settled"));
+        pot.claim(_ids(id1));
+    }
+
+    function test_claim_emptyArray_isNoop() public {
+        pot.claim(new uint256[](0)); // no revert, no state change
+    }
+
+    function test_claim_isIdempotent() public {
+        uint256 id1 = _buyTicket();
+        vm.prank(alice);
+        pot.buyShares(id1, 100);
+
+        jackpot.setTicketTier(jackpot.currentDrawingId(), id1, 11);
+        jackpot.setTierPayout(jackpot.currentDrawingId(), 11, 100_000_000);
+
+        vm.warp(block.timestamp + DRAWING_DURATION + 1);
+        usdc.mint(address(jackpot), 100_000_000);
+        jackpot.settleDrawing();
+
+        pot.claim(_ids(id1));
+        // Second claim is a no-op (already claimed); would otherwise revert on Megapot.
+        pot.claim(_ids(id1));
+
+        (, uint256 wps, bool claimed) = pot.getTicket(id1);
+        assertTrue(claimed);
+        assertEq(wps, 1_000_000); // 100 USDC / 100 shares
     }
 
     // ----- Reserve management --------------------------------------------
@@ -331,19 +373,15 @@ contract PennyPotTest is Test {
     // ----- Pause ---------------------------------------------------------
 
     function test_pause_blocksUserAndCrank_writes() public {
-        // Hoist the drawingId read: if left inline as an argument, vm.expectRevert would
-        // latch onto the (non-reverting) currentDrawingId() staticcall instead.
-        uint256 drawingId = jackpot.currentDrawingId();
-
         vm.prank(owner);
         pot.setPaused(true);
 
         vm.expectRevert(PennyPot.Paused.selector);
-        pot.buyNextTicket(drawingId);
+        pot.buyNextTicket();
 
         vm.prank(alice);
         vm.expectRevert(PennyPot.Paused.selector);
-        pot.buyShares(drawingId, 1);
+        pot.buyShares(1, 1);
     }
 
     // ----- Ownership transfer (two-step) ---------------------------------
@@ -366,34 +404,27 @@ contract PennyPotTest is Test {
 
     // ----- Solvency invariant -------------------------------------------
 
-    /// @notice The contract's USDC balance must always cover the reserve + sum of
-    ///         outstanding pending winnings. We approximate "outstanding" by the
-    ///         on-deposit winnings minus what's been claimed; in a single test
-    ///         scenario we can check directly.
+    /// @notice The contract's USDC balance must always cover the reserve + outstanding
+    ///         pending winnings.
     function test_solvency_afterWin_balanceCoversReserveAndOwed() public {
-        uint256 drawingId = jackpot.currentDrawingId();
-
-        pot.buyNextTicket(drawingId);
+        uint256 id1 = _buyTicket();
         vm.prank(alice);
-        pot.buyShares(drawingId, 100);
+        pot.buyShares(id1, 100);
 
-        jackpot.setTicketTier(drawingId, 1, 11);
-        jackpot.setTierPayout(drawingId, 11, 500_000_000); // 500 USDC
+        jackpot.setTicketTier(jackpot.currentDrawingId(), id1, 11);
+        jackpot.setTierPayout(jackpot.currentDrawingId(), 11, 500_000_000); // 500 USDC
 
         vm.warp(block.timestamp + DRAWING_DURATION + 1);
-        pot.finalizeDrawing(drawingId);
         usdc.mint(address(jackpot), 500_000_000);
         jackpot.settleDrawing();
-        pot.claimDrawing(drawingId);
+        pot.claim(_ids(id1));
 
-        // Reserve was replenished by the share buy ($1) and unchanged by claim.
         uint256 reserve = pot.reservePool();
-        uint256 aliceOwed = pot.getPendingWinnings(drawingId, alice);
+        uint256 aliceOwed = pot.getPendingWinnings(alice, _ids(id1));
         uint256 contractBalance = usdc.balanceOf(address(pot));
 
         assertEq(reserve, SEED_RESERVE, "reserve should be back to seed");
         assertEq(aliceOwed, 500_000_000);
-        // Balance = reserve (365M) + alice's winnings (500M) = 865M.
         assertEq(contractBalance, reserve + aliceOwed);
     }
 }
