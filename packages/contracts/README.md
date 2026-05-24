@@ -101,9 +101,12 @@ Users:
 
 ### Owner
 
+Ownership and pause are OpenZeppelin's `Ownable2Step` + `Pausable`.
+
 - `withdrawReserveSurplus(uint256 amount, address to)` — pull surplus from reserve.
-- `setPaused(bool)` — emergency stop on writes.
-- `transferOwnership(address) / acceptOwnership()` — two-step handoff.
+- `pause() / unpause()` — emergency stop on writes (OZ `Pausable`).
+- `transferOwnership(address) / acceptOwnership()` — two-step handoff (OZ `Ownable2Step`);
+  also `renounceOwnership()`.
 
 ### Reads (for UI)
 
@@ -186,7 +189,7 @@ forge test -vv
   winnings — `withdrawReserveSurplus` is bounded by `reservePool`, which only tracks
   reserve funds (not pending payouts).
 - `claim` is permissionless and idempotent. Anyone can crank it.
-- `transferOwnership` is two-step (start + accept) to prevent typo-bricking.
+- Ownership is OZ `Ownable2Step` — two-step (start + accept) to prevent typo-bricking.
 - No reentrancy guards — state changes precede external USDC/Megapot calls (or follow
   them on safe internal arithmetic). USDC on Base is non-reentrant; re-check if forking.
 ```

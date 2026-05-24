@@ -5,6 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {PennyPot} from "../src/PennyPot.sol";
 import {MockJackpot} from "./mocks/MockJackpot.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract PennyPotTest is Test {
     MockUSDC usdc;
@@ -71,7 +73,8 @@ contract PennyPotTest is Test {
         new PennyPot(address(usdc), address(0), feeReceiver, owner);
         vm.expectRevert(PennyPot.ZeroAddress.selector);
         new PennyPot(address(usdc), address(jackpot), address(0), owner);
-        vm.expectRevert(PennyPot.ZeroAddress.selector);
+        // Zero owner is rejected by OZ Ownable, not our ZeroAddress check.
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
         new PennyPot(address(usdc), address(jackpot), feeReceiver, address(0));
     }
 
@@ -357,7 +360,7 @@ contract PennyPotTest is Test {
     }
 
     function test_withdrawReserveSurplus_onlyOwner_cappedAtReserve() public {
-        vm.expectRevert(PennyPot.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
         pot.withdrawReserveSurplus(1, owner);
 
         vm.expectRevert(PennyPot.InsufficientReserve.selector);
@@ -374,13 +377,13 @@ contract PennyPotTest is Test {
 
     function test_pause_blocksUserAndCrank_writes() public {
         vm.prank(owner);
-        pot.setPaused(true);
+        pot.pause();
 
-        vm.expectRevert(PennyPot.Paused.selector);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
         pot.buyNextTicket();
 
         vm.prank(alice);
-        vm.expectRevert(PennyPot.Paused.selector);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
         pot.buyShares(1, 1);
     }
 
@@ -392,7 +395,7 @@ contract PennyPotTest is Test {
         assertEq(pot.owner(), owner); // not yet
         assertEq(pot.pendingOwner(), alice);
 
-        vm.expectRevert(PennyPot.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, bob));
         vm.prank(bob);
         pot.acceptOwnership();
 

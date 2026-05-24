@@ -2,6 +2,9 @@
 pragma solidity ^0.8.24;
 
 import {IJackpot} from "./interfaces/IJackpot.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 interface IERC20 {
     function transfer(address, uint256) external returns (bool);
@@ -41,8 +44,10 @@ interface IERC20 {
  *
  *         Tightly scoped, non-upgradeable. Pause + reserve withdrawal are the only
  *         owner knobs. See README for the full spec and reasoning.
+ *
+ *         Ownership and pause use OpenZeppelin's Ownable2Step + Pausable.
  */
-contract PennyPot {
+contract PennyPot is Ownable2Step, Pausable {
     // -----------------------------------------------------------------------
     // Constants
     // -----------------------------------------------------------------------
@@ -116,10 +121,6 @@ contract PennyPot {
     ///         purchases. Decreases only on buyNextTicket and owner withdrawals.
     uint256 public reservePool;
 
-    address public owner;
-    address public pendingOwner;
-    bool public paused;
-
     // -----------------------------------------------------------------------
     // Events
     // -----------------------------------------------------------------------
@@ -131,16 +132,11 @@ contract PennyPot {
     event WinningsWithdrawn(address indexed user, uint256 amount);
     event ReserveDeposited(address indexed from, uint256 amount, uint256 newReserve);
     event ReserveWithdrawn(address indexed to, uint256 amount, uint256 newReserve);
-    event PausedSet(bool paused);
-    event OwnershipTransferStarted(address indexed from, address indexed to);
-    event OwnershipTransferred(address indexed from, address indexed to);
 
     // -----------------------------------------------------------------------
     // Errors
     // -----------------------------------------------------------------------
 
-    error NotOwner();
-    error Paused();
     error ZeroAddress();
     error FeeReceiverEqualsContract();
     error InvalidCount();
@@ -155,20 +151,6 @@ contract PennyPot {
     error ApprovalFailed();
 
     // -----------------------------------------------------------------------
-    // Modifiers
-    // -----------------------------------------------------------------------
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
-
-    modifier whenNotPaused() {
-        if (paused) revert Paused();
-        _;
-    }
-
-    // -----------------------------------------------------------------------
     // Constructor
     // -----------------------------------------------------------------------
 
@@ -177,8 +159,9 @@ contract PennyPot {
     /// @param _feeReceiver Address listed as the referrer on every ticket buy.
     ///                     MUST be different from address(this).
     /// @param _owner       Operator address with admin powers (reserve mgmt, pause).
-    constructor(address _usdc, address _jackpot, address _feeReceiver, address _owner) {
-        if (_usdc == address(0) || _jackpot == address(0) || _feeReceiver == address(0) || _owner == address(0)) {
+    ///                     Zero reverts via OZ Ownable's OwnableInvalidOwner.
+    constructor(address _usdc, address _jackpot, address _feeReceiver, address _owner) Ownable(_owner) {
+        if (_usdc == address(0) || _jackpot == address(0) || _feeReceiver == address(0)) {
             revert ZeroAddress();
         }
         if (_feeReceiver == address(this)) revert FeeReceiverEqualsContract();
@@ -186,13 +169,10 @@ contract PennyPot {
         USDC = IERC20(_usdc);
         JACKPOT = IJackpot(_jackpot);
         feeReceiver = _feeReceiver;
-        owner = _owner;
 
         // One-time max approval. Re-approval would be needed only if USDC ever upgrades
         // to a "race-condition-safe" approve pattern; current USDC on Base is fine.
         if (!IERC20(_usdc).approve(_jackpot, type(uint256).max)) revert ApprovalFailed();
-
-        emit OwnershipTransferred(address(0), _owner);
     }
 
     // -----------------------------------------------------------------------
@@ -354,24 +334,18 @@ contract PennyPot {
     // -----------------------------------------------------------------------
     // Owner functions
     // -----------------------------------------------------------------------
+    //
+    // Ownership (two-step) comes from OZ Ownable2Step: owner(), pendingOwner(),
+    // transferOwnership(newOwner), acceptOwnership(), renounceOwnership().
 
-    function setPaused(bool _paused) external onlyOwner {
-        paused = _paused;
-        emit PausedSet(_paused);
+    /// @notice Emergency stop: blocks buyShares and buyNextTicket.
+    function pause() external onlyOwner {
+        _pause();
     }
 
-    function transferOwnership(address newOwner) external onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
-        pendingOwner = newOwner;
-        emit OwnershipTransferStarted(owner, newOwner);
-    }
-
-    function acceptOwnership() external {
-        if (msg.sender != pendingOwner) revert NotOwner();
-        address old = owner;
-        owner = pendingOwner;
-        pendingOwner = address(0);
-        emit OwnershipTransferred(old, msg.sender);
+    /// @notice Resume after a pause.
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     // -----------------------------------------------------------------------
