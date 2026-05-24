@@ -34,7 +34,7 @@ Reserve (seeded by operator)
     │
     │ −$1 (fronts ticket)
     ▼
-buyNextTicket() ──► Jackpot.buyTickets(recipient=PennyPot, referrer=feeReceiver,
+buyTicket() ──► Jackpot.buyTickets(recipient=PennyPot, referrer=feeReceiver,
                                        split=[1e18], source=keccak256("pennypot"))
                                         │
                                         │ mints ticket NFT to PennyPot
@@ -42,14 +42,14 @@ buyNextTicket() ──► Jackpot.buyTickets(recipient=PennyPot, referrer=feeRec
                                         ▼
                             activeTicketId = #N (selling shares until activeDeadline)
                                         │
-                                        │ 100 × buyShares(#N, ...) at 1¢ each
+                                        │ 100 × buyTicketShares(#N, ...) at 1¢ each
                                         │ each +1¢ → reserve
                                         ▼
-                            #N full → anyone cranks buyNextTicket() again
+                            #N full → anyone cranks buyTicket() again
                                         ⋮ (rolls within the drawing, then into the next)
 
 Megapot settles (winningTicket != 0):
-  claim([ticketIds])
+  claimWinnings([ticketIds])
     For each ticket: Jackpot.claimWinnings([id]), measure USDC delta,
     set winningsPerShare = ticketWin / sharesSold
     (undersubscribed tickets amplify per-share payout)
@@ -66,9 +66,9 @@ Users:
 |---|---|
 | Share price | 1¢ (10_000 USDC, 6-decimal) |
 | Shares per ticket | 100 |
-| Reserve seed | by operator via `topUpReserve` |
+| Reserve seed | by owner via `depositReserve` |
 | Reserve withdrawable | Yes, by owner (capped at `reservePool`) |
-| Reserve drained behavior | `buyNextTicket` reverts; selling halts gracefully |
+| Reserve drained behavior | `buyTicket` reverts; selling halts gracefully |
 | Per-wallet share cap | None (whales welcome) |
 | Win payout rule | `tierPayout / sharesActuallySold` per ticket (undersubscription amplifies) |
 | Pool's cut of winnings | Zero |
@@ -77,33 +77,33 @@ Users:
 | Source tag | `keccak256("pennypot")` |
 | `recipient` ≠ `referrer` enforced by Megapot | operator wallet passed as `feeReceiver` |
 | Drawing lifecycle on-chain | **None** — keyed off Megapot ticket IDs; drawings indexed off-chain |
-| Settlement crank | `claim([ticketIds])`, permissionless; gated by Megapot, not internal state |
+| Settlement crank | `claimWinnings([ticketIds])`, permissionless; gated by Megapot, not internal state |
 | MIN_SELLING_WINDOW | 1 hour before drawing close |
-| Claim pattern | Permissionless `claim` + user-pulled `withdraw([ticketIds])` |
+| Claim pattern | Permissionless `claimWinnings` + user-pulled `withdraw([ticketIds])` |
 | Upgradeability | None — redeploy if needed |
 
 ## Functions
 
 ### Users
 
-- `buyShares(uint256 expectedTicketId, uint8 count)` — buy 1..N shares of the active
+- `buyTicketShares(uint256 expectedTicketId, uint8 count)` — buy 1..N shares of the active
   ticket. `expectedTicketId` guards against the active ticket rolling over between
   submit and execution.
 - `withdraw(uint256[] ticketIds)` — pull owed USDC across the given claimed tickets.
 
 ### Permissionless cranks
 
-- `buyNextTicket()` — front + buy the next Megapot ticket (into the current drawing);
+- `buyTicket()` — front + buy the next Megapot ticket (into the current drawing);
   allowed only when the active ticket is full or its drawing's window has ended.
-- `claim(uint256[] ticketIds)` — claim each ticket's winnings from Megapot and set its
+- `claimWinnings(uint256[] ticketIds)` — claim each ticket's winnings from Megapot and set its
   `winningsPerShare`. Idempotent (already-claimed tickets skipped).
-- `topUpReserve(uint256 amount)` — anyone can contribute USDC.
 
 ### Owner
 
 Ownership and pause are OpenZeppelin's `Ownable2Step` + `Pausable`.
 
-- `withdrawReserveSurplus(uint256 amount, address to)` — pull surplus from reserve.
+- `depositReserve(uint256 amount)` — deposit USDC into the reserve (seed/replenish).
+- `withdrawReserve(uint256 amount, address to)` — pull from reserve (capped at `reservePool`).
 - `pause() / unpause()` — emergency stop on writes (OZ `Pausable`).
 - `transferOwnership(address) / acceptOwnership()` — two-step handoff (OZ `Ownable2Step`);
   also `renounceOwnership()`.
@@ -154,14 +154,14 @@ Constructor args (`PennyPot(_usdc, _jackpot, _feeReceiver, _owner)`):
   `Jackpot.claimReferralFees()`
 - `_owner` = admin wallet (reserve mgmt + pause)
 
-Then seed the reserve: `USDC.approve(pennyPot, amount)` then `pennyPot.topUpReserve(amount)`.
+Then seed the reserve from the owner: `USDC.approve(pennyPot, amount)` then `pennyPot.depositReserve(amount)`.
 
 ### Keeper loop (poll ~every 30 min)
 
 - If there's no active ticket, or the active ticket is full, or its drawing window has
-  ended (and reserve ≥ $1, and we're > MIN_SELLING_WINDOW from close): call `buyNextTicket()`.
+  ended (and reserve ≥ $1, and we're > MIN_SELLING_WINDOW from close): call `buyTicket()`.
 - After a drawing settles on Megapot (`winningTicket != 0`): call
-  `claim(getDrawingTicketIds(drawingId))` to settle that drawing's tickets.
+  `claimWinnings(getDrawingTicketIds(drawingId))` to settle that drawing's tickets.
 
 ## Testing
 
@@ -173,7 +173,7 @@ forge test -vv
 
 ## Known limitations
 
-- **`ticketPrice` change on Megapot bricks the contract.** `buyNextTicket` reverts if
+- **`ticketPrice` change on Megapot bricks the contract.** `buyTicket` reverts if
   `Jackpot.ticketPrice() != 1 USDC`. If Megapot governance changes this, redeploy.
 - **Winnings from a 0-share ticket stay in the contract balance.** If the reserve
   fronts a ticket nobody buys shares of and it wins, `winningsPerShare` can't be
@@ -186,9 +186,9 @@ forge test -vv
 - `feeReceiver` is immutable. If the operator wallet is lost, referral fees still
   accumulate in Megapot but can't be claimed by anyone else. Choose carefully.
 - `owner` can pause writes and pull reserve surplus, but **cannot** touch user
-  winnings — `withdrawReserveSurplus` is bounded by `reservePool`, which only tracks
+  winnings — `withdrawReserve` is bounded by `reservePool`, which only tracks
   reserve funds (not pending payouts).
-- `claim` is permissionless and idempotent. Anyone can crank it.
+- `claimWinnings` is permissionless and idempotent. Anyone can crank it.
 - Ownership is OZ `Ownable2Step` — two-step (start + accept) to prevent typo-bricking.
 - No reentrancy guards — state changes precede external USDC/Megapot calls (or follow
   them on safe internal arithmetic). USDC on Base is non-reentrant; re-check if forking.

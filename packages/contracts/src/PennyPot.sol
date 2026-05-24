@@ -20,7 +20,7 @@ interface IERC20 {
  *         Each Megapot ticket costs $1 (1 USDC). PennyPot fronts every ticket from a
  *         reserve, then sells it as 100 shares at 1¢ each. Share proceeds replenish
  *         the reserve. While a Megapot drawing is open, tickets roll: when the active
- *         ticket fills, anyone can crank `buyNextTicket` to buy the next, until the
+ *         ticket fills, anyone can crank `buyTicket` to buy the next, until the
  *         drawing's `drawingTime` (minus a selling-window buffer).
  *
  *         Each share's payout is `ticketWinnings / sharesActuallySold` — so when a
@@ -34,10 +34,10 @@ interface IERC20 {
  *         a ticket's drawing has settled (`claimWinnings` reverts otherwise). The
  *         contract is a thin ledger keyed by the Megapot ticket ID:
  *
- *           - buyNextTicket()                : front + buy the next Megapot ticket
- *           - buyShares(ticketId, count)     : buy 1..N shares of the active ticket
- *           - claim(ticketIds[])             : pull each ticket's winnings from Megapot
- *           - withdraw(ticketIds[])          : pull caller's share of claimed winnings
+ *           - buyTicket()                     : front + buy the next Megapot ticket
+ *           - buyTicketShares(ticketId, count): buy 1..N shares of the active ticket
+ *           - claimWinnings(ticketIds[])      : pull each ticket's winnings from Megapot
+ *           - withdraw(ticketIds[])           : pull caller's share of claimed winnings
  *
  *         A drawingId -> ticketIds[] index is kept only as a read convenience
  *         (`getDrawingTicketIds`); it never gates contract logic.
@@ -53,7 +53,7 @@ contract PennyPot is Ownable2Step, Pausable {
     // -----------------------------------------------------------------------
 
     /// @notice Price of a Megapot ticket, in 6-decimal USDC. Hardcoded; reverts in
-    ///         buyNextTicket if Megapot's live ticketPrice differs.
+    ///         buyTicket if Megapot's live ticketPrice differs.
     uint256 public constant TICKET_PRICE = 1_000_000; // 1 USDC
 
     /// @notice Price of a single PennyPot share. TICKET_PRICE / SHARES_PER_TICKET.
@@ -62,9 +62,9 @@ contract PennyPot is Ownable2Step, Pausable {
     /// @notice Number of shares each ticket is split into.
     uint8 public constant SHARES_PER_TICKET = 100;
 
-    /// @notice Minimum seconds before drawingTime that buyNextTicket will still buy
+    /// @notice Minimum seconds before drawingTime that buyTicket will still buy
     ///         a fresh ticket. Prevents an attacker from filling a ticket near close,
-    ///         cranking buyNextTicket, and forcing the reserve to subsidize a ticket
+    ///         cranking buyTicket, and forcing the reserve to subsidize a ticket
     ///         that has no time to resell its shares.
     uint256 public constant MIN_SELLING_WINDOW = 1 hours;
 
@@ -102,10 +102,10 @@ contract PennyPot is Ownable2Step, Pausable {
     /// @notice Shares sold per Megapot ticket (0..100).
     mapping(uint256 => uint8) public soldOf;
 
-    /// @notice Per-share winnings for a ticket, set by `claim`. 0 = losing or unclaimed.
+    /// @notice Per-share winnings for a ticket, set by `claimWinnings`. 0 = losing or unclaimed.
     mapping(uint256 => uint256) public winningsPerShareOf;
 
-    /// @notice Whether `claim` has already settled a ticket against Megapot. Needed to
+    /// @notice Whether `claimWinnings` has already settled a ticket against Megapot. Needed to
     ///         distinguish a claimed-losing ticket (wps 0) from an unclaimed one.
     mapping(uint256 => bool) public claimedOf;
 
@@ -118,7 +118,7 @@ contract PennyPot is Ownable2Step, Pausable {
     mapping(uint256 => uint256[]) internal drawingTickets;
 
     /// @notice USDC owned by the reserve. Fronts every ticket; replenished by share
-    ///         purchases. Decreases only on buyNextTicket and owner withdrawals.
+    ///         purchases. Decreases only on buyTicket and owner withdrawals.
     uint256 public reservePool;
 
     // -----------------------------------------------------------------------
@@ -187,7 +187,7 @@ contract PennyPot is Ownable2Step, Pausable {
     ///         and a new one was cranked) so a buyer never lands on the wrong ticket.
     /// @param  count            Shares to buy; reverts if it would push the ticket
     ///         past 100 shares.
-    function buyShares(uint256 expectedTicketId, uint8 count) external whenNotPaused {
+    function buyTicketShares(uint256 expectedTicketId, uint8 count) external whenNotPaused {
         if (count == 0) revert InvalidCount();
 
         uint256 active = activeTicketId;
@@ -242,7 +242,7 @@ contract PennyPot is Ownable2Step, Pausable {
     /// @dev    Allowed only when the active ticket is "closed": none yet, full, or its
     ///         drawing's selling window has ended. Reverts if the reserve can't cover
     ///         the ticket price or if we're within MIN_SELLING_WINDOW of drawingTime.
-    function buyNextTicket() external whenNotPaused {
+    function buyTicket() external whenNotPaused {
         uint256 active = activeTicketId;
         bool activeClosed = active == 0 || soldOf[active] == SHARES_PER_TICKET || block.timestamp >= activeDeadline;
         if (!activeClosed) revert TicketStillSelling();
@@ -282,7 +282,7 @@ contract PennyPot is Ownable2Step, Pausable {
     /// @dev    Claims one ticket at a time, measuring the USDC delta to attribute that
     ///         ticket's payout. Winnings from a 0-share ticket stay in the contract
     ///         balance (winningsPerShare can't be computed); rare by construction.
-    function claim(uint256[] calldata ticketIds) external {
+    function claimWinnings(uint256[] calldata ticketIds) external {
         for (uint256 i = 0; i < ticketIds.length; i++) {
             uint256 id = ticketIds[i];
             if (claimedOf[id]) continue;
@@ -311,19 +311,17 @@ contract PennyPot is Ownable2Step, Pausable {
     // Reserve management
     // -----------------------------------------------------------------------
 
-    /// @notice Anyone can top up the reserve. Useful for the operator (seeding the
-    ///         reserve) or for community top-ups.
-    function topUpReserve(uint256 amount) external {
+    /// @notice Owner deposits USDC into the reserve (e.g. seeding or replenishing).
+    function depositReserve(uint256 amount) external onlyOwner {
         if (amount == 0) revert InvalidCount();
         if (!USDC.transferFrom(msg.sender, address(this), amount)) revert ApprovalFailed();
         reservePool += amount;
         emit ReserveDeposited(msg.sender, amount, reservePool);
     }
 
-    /// @notice Owner can pull surplus from the reserve. Capped at `reservePool` so
-    ///         pending user winnings (held outside the reserve accounting) can never
-    ///         be touched.
-    function withdrawReserveSurplus(uint256 amount, address to) external onlyOwner {
+    /// @notice Owner pulls from the reserve. Capped at `reservePool` so pending user
+    ///         winnings (held outside the reserve accounting) can never be touched.
+    function withdrawReserve(uint256 amount, address to) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         if (amount > reservePool) revert InsufficientReserve();
         reservePool -= amount;
@@ -338,7 +336,7 @@ contract PennyPot is Ownable2Step, Pausable {
     // Ownership (two-step) comes from OZ Ownable2Step: owner(), pendingOwner(),
     // transferOwnership(newOwner), acceptOwnership(), renounceOwnership().
 
-    /// @notice Emergency stop: blocks buyShares and buyNextTicket.
+    /// @notice Emergency stop: blocks buyTicketShares and buyTicket.
     function pause() external onlyOwner {
         _pause();
     }
@@ -351,6 +349,43 @@ contract PennyPot is Ownable2Step, Pausable {
     // -----------------------------------------------------------------------
     // Reads (UI helpers)
     // -----------------------------------------------------------------------
+
+    /// @notice One-call snapshot for a UI/keeper. `canBuyNextTicket` mirrors
+    ///         buyTicket()'s exact guards (pause, active-ticket-closed, ticket-price
+    ///         match, selling window, reserve) — if it's true, buyTicket() will succeed.
+    /// @return currentDrawingId  Megapot's live drawing id.
+    /// @return currentTicketId   The ticket currently selling shares (0 if none).
+    /// @return sold              Shares sold on the active ticket (0..100).
+    /// @return deadline          The active ticket's selling cutoff (activeDeadline).
+    /// @return canBuyNextTicket  Whether buyTicket() would succeed right now.
+    /// @return reserve           reservePool.
+    /// @return isPaused          Whether writes are paused.
+    function getState()
+        external
+        view
+        returns (
+            uint256 currentDrawingId,
+            uint256 currentTicketId,
+            uint8 sold,
+            uint64 deadline,
+            bool canBuyNextTicket,
+            uint256 reserve,
+            bool isPaused
+        )
+    {
+        currentDrawingId = JACKPOT.currentDrawingId();
+        IJackpot.DrawingState memory ms = JACKPOT.getDrawingState(currentDrawingId);
+
+        currentTicketId = activeTicketId;
+        sold = soldOf[currentTicketId];
+        deadline = activeDeadline;
+        reserve = reservePool;
+        isPaused = paused();
+
+        bool activeClosed = currentTicketId == 0 || sold == SHARES_PER_TICKET || block.timestamp >= deadline;
+        canBuyNextTicket = !isPaused && activeClosed && ms.ticketPrice == TICKET_PRICE
+            && block.timestamp + MIN_SELLING_WINDOW <= ms.drawingTime && reserve >= TICKET_PRICE;
+    }
 
     /// @notice Megapot ticket ids bought under a drawing, in purchase order.
     function getDrawingTicketIds(uint256 drawingId) external view returns (uint256[] memory) {
