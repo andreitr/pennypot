@@ -6,10 +6,11 @@ The pool keeps zero winnings. Operator revenue comes from Megapot's referral fee
 This package contains:
 
 - `src/PennyPot.sol` — the main contract
-- `src/interfaces/IJackpot.sol` — minimal interface to Megapot's Jackpot contract on Base
+- `src/interfaces/IJackpot.sol` — minimal interface to Megapot's Jackpot (reads + claims)
+- `src/interfaces/IRandomTicketBuyer.sol` — interface to Megapot's quick-pick buyer
 
-Tests are in `test/`, with a `MockJackpot` and `MockUSDC` for unit testing, and a
-deploy script in `script/Deploy.s.sol`.
+Tests are in `test/`, with `MockJackpot`, `MockRandomTicketBuyer`, and `MockUSDC` for unit
+testing, and a deploy script in `script/Deploy.s.sol`.
 
 ## Design: ticket-keyed, drawing-agnostic
 
@@ -34,10 +35,11 @@ Reserve (seeded by operator)
     │
     │ −$1 (fronts ticket)
     ▼
-buyTicket() ──► Jackpot.buyTickets(recipient=PennyPot, referrer=feeReceiver,
-                                       split=[1e18], source=keccak256("pennypot"))
+buyTicket() ──► RandomTicketBuyer.buyTickets(count=1, recipient=PennyPot,
+                                       referrer=feeReceiver, split=[1e18],
+                                       source=keccak256("pennypot"))
                                         │
-                                        │ mints ticket NFT to PennyPot
+                                        │ picks numbers, mints quick-pick NFT to PennyPot
                                         │ accrues referral fee to feeReceiver
                                         ▼
                             activeTicketId = #N (selling shares until activeDeadline)
@@ -155,10 +157,12 @@ any value via env vars.
 forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast --verify
 ```
 
-Constructor args (`PennyPot(_usdc, _jackpot, _feeReceiver, _owner)`):
+Constructor args (`PennyPot(_usdc, _jackpot, _randomBuyer, _feeReceiver, _owner)`):
 
 - `_usdc` = `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (USDC on Base)
-- `_jackpot` = `0x3bAe643002069dBCbcd62B1A4eb4C4A397d042a2` (Megapot Jackpot)
+- `_jackpot` = `0x3bAe643002069dBCbcd62B1A4eb4C4A397d042a2` (Megapot Jackpot — reads + claims)
+- `_randomBuyer` = `0xb9560b43b91dE2c1DaF5dfbb76b2CFcDaFc13aBd` (Megapot RandomTicketBuyer —
+  quick-pick purchases)
 - `_feeReceiver` = referrer wallet, **not** the PennyPot address (default
   `0xDAdA5bAd8cdcB9e323d0606d081E6Dc5D3a577a1`); accrues referral fees, claimable via
   `Jackpot.claimReferralFees()`

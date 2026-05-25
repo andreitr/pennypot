@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {PennyPot} from "../src/PennyPot.sol";
 import {MockJackpot} from "./mocks/MockJackpot.sol";
+import {MockRandomTicketBuyer} from "./mocks/MockRandomTicketBuyer.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -11,6 +12,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 contract PennyPotTest is Test {
     MockUSDC usdc;
     MockJackpot jackpot;
+    MockRandomTicketBuyer buyer;
     PennyPot pot;
 
     address owner = address(0xA11CE);
@@ -25,7 +27,8 @@ contract PennyPotTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         jackpot = new MockJackpot(address(usdc), 1_000_000, DRAWING_DURATION);
-        pot = new PennyPot(address(usdc), address(jackpot), feeReceiver, owner);
+        buyer = new MockRandomTicketBuyer(address(usdc), address(jackpot));
+        pot = new PennyPot(address(usdc), address(jackpot), address(buyer), feeReceiver, owner);
 
         // Seed the reserve (owner-only). depositReserve pulls USDC from the owner.
         usdc.mint(owner, SEED_RESERVE);
@@ -70,14 +73,16 @@ contract PennyPotTest is Test {
 
     function test_constructor_reverts_on_zero_addresses() public {
         vm.expectRevert(PennyPot.ZeroAddress.selector);
-        new PennyPot(address(0), address(jackpot), feeReceiver, owner);
+        new PennyPot(address(0), address(jackpot), address(buyer), feeReceiver, owner);
         vm.expectRevert(PennyPot.ZeroAddress.selector);
-        new PennyPot(address(usdc), address(0), feeReceiver, owner);
+        new PennyPot(address(usdc), address(0), address(buyer), feeReceiver, owner);
         vm.expectRevert(PennyPot.ZeroAddress.selector);
-        new PennyPot(address(usdc), address(jackpot), address(0), owner);
+        new PennyPot(address(usdc), address(jackpot), address(0), feeReceiver, owner);
+        vm.expectRevert(PennyPot.ZeroAddress.selector);
+        new PennyPot(address(usdc), address(jackpot), address(buyer), address(0), owner);
         // Zero owner is rejected by OZ Ownable, not our ZeroAddress check.
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
-        new PennyPot(address(usdc), address(jackpot), feeReceiver, address(0));
+        new PennyPot(address(usdc), address(jackpot), address(buyer), feeReceiver, address(0));
     }
 
     function test_constructor_reverts_if_feeReceiver_equals_contract() public view {

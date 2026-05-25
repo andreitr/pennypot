@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IJackpot} from "./interfaces/IJackpot.sol";
+import {IRandomTicketBuyer} from "./interfaces/IRandomTicketBuyer.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -68,8 +69,8 @@ contract PennyPot is Ownable2Step, Pausable {
     ///         that has no time to resell its shares.
     uint256 public constant MIN_SELLING_WINDOW = 1 hours;
 
-    /// @notice Single-element referrer-split weight passed to Megapot's buyTickets.
-    ///         Megapot's `_referralSplit` is in 1e18 scale and must sum to exactly 1e18,
+    /// @notice Single-element referrer-split weight passed to the random ticket buyer.
+    ///         Megapot's referral split is in 1e18 scale and must sum to exactly 1e18,
     ///         so a single 100% referrer uses the full 1e18 weight.
     uint256 internal constant REFERRAL_SPLIT_FULL = 1e18;
 
@@ -83,6 +84,10 @@ contract PennyPot is Ownable2Step, Pausable {
 
     IERC20 public immutable USDC;
     IJackpot public immutable JACKPOT;
+
+    /// @notice Megapot's quick-pick buyer. PennyPot buys 1 random ticket per crank
+    ///         through here (the Jackpot itself has no working quick-pick).
+    IRandomTicketBuyer public immutable RANDOM_BUYER;
 
     /// @notice Operator-owned address listed as the referrer on every ticket buy.
     ///         Earns Megapot's per-ticket referral fee and per-claim win share. Must
@@ -170,24 +175,28 @@ contract PennyPot is Ownable2Step, Pausable {
     // -----------------------------------------------------------------------
 
     /// @param _usdc        Base mainnet USDC address.
-    /// @param _jackpot     Megapot Jackpot contract address.
+    /// @param _jackpot     Megapot Jackpot contract (reads + claims).
+    /// @param _randomBuyer Megapot JackpotRandomTicketBuyer (quick-pick purchases).
     /// @param _feeReceiver Address listed as the referrer on every ticket buy.
     ///                     MUST be different from address(this).
     /// @param _owner       Operator address with admin powers (reserve mgmt, pause).
     ///                     Zero reverts via OZ Ownable's OwnableInvalidOwner.
-    constructor(address _usdc, address _jackpot, address _feeReceiver, address _owner) Ownable(_owner) {
-        if (_usdc == address(0) || _jackpot == address(0) || _feeReceiver == address(0)) {
+    constructor(address _usdc, address _jackpot, address _randomBuyer, address _feeReceiver, address _owner)
+        Ownable(_owner)
+    {
+        if (_usdc == address(0) || _jackpot == address(0) || _randomBuyer == address(0) || _feeReceiver == address(0)) {
             revert ZeroAddress();
         }
         if (_feeReceiver == address(this)) revert FeeReceiverEqualsContract();
 
         USDC = IERC20(_usdc);
         JACKPOT = IJackpot(_jackpot);
+        RANDOM_BUYER = IRandomTicketBuyer(_randomBuyer);
         feeReceiver = _feeReceiver;
 
-        // One-time max approval. Re-approval would be needed only if USDC ever upgrades
-        // to a "race-condition-safe" approve pattern; current USDC on Base is fine.
-        if (!IERC20(_usdc).approve(_jackpot, type(uint256).max)) revert ApprovalFailed();
+        // One-time max approval to the random-ticket buyer, which pulls USDC on each buy.
+        // (Claims go through the Jackpot and don't pull, so no approval needed there.)
+        if (!IERC20(_usdc).approve(_randomBuyer, type(uint256).max)) revert ApprovalFailed();
     }
 
     // -----------------------------------------------------------------------
@@ -264,16 +273,14 @@ contract PennyPot is Ownable2Step, Pausable {
         if (reservePool < TICKET_PRICE) revert ReserveTooLowForTicket(reservePool, TICKET_PRICE);
         reservePool -= TICKET_PRICE;
 
-        // Buy 1 quick-pick from Megapot. recipient = this; referrer = feeReceiver.
-        IJackpot.Ticket[] memory order = new IJackpot.Ticket[](1);
-        order[0] = IJackpot.Ticket({normals: new uint8[](0), bonusball: 0});
-
+        // Buy 1 quick-pick via Megapot's random ticket buyer. recipient = this;
+        // referrer = feeReceiver. The buyer picks the numbers and mints the ticket NFT.
         address[] memory referrers = new address[](1);
         referrers[0] = feeReceiver;
         uint256[] memory split = new uint256[](1);
         split[0] = REFERRAL_SPLIT_FULL;
 
-        uint256[] memory ids = JACKPOT.buyTickets(order, address(this), referrers, split, SOURCE);
+        uint256[] memory ids = RANDOM_BUYER.buyTickets(1, address(this), referrers, split, SOURCE);
         uint256 newId = ids[0];
 
         activeTicketId = newId;

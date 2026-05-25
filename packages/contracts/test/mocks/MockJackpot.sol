@@ -11,8 +11,8 @@ interface IERC20 {
 
 /**
  * @notice Minimal Megapot stand-in for unit tests. Only models the behaviors
- *         PennyPot actually uses: buyTickets, claimWinnings, getDrawingState,
- *         getTicketTierIds, getDrawingTierPayouts, currentDrawingId.
+ *         PennyPot actually uses: mintTicket (via the random buyer), claimWinnings,
+ *         getDrawingState, getTicketTierIds, getDrawingTierPayouts, currentDrawingId.
  *
  *         Per-ticket payouts are set by the test via `setTicketTier()` before
  *         calling `settleDrawing()`. Tier payouts default to 0 except whatever
@@ -50,29 +50,11 @@ contract MockJackpot {
 
     // ---- IJackpot surface --------------------------------------------------
 
-    function buyTickets(
-        IJackpot.Ticket[] calldata _tickets,
-        address _recipient,
-        address[] calldata _referrers,
-        uint256[] calldata, /* _referralSplit */
-        bytes32 /* _source */
-    ) external returns (uint256[] memory ticketIds) {
-        require(_recipient != address(0), "bad recipient");
-        require(_recipient != _referrers[0], "recipient==referrer");
-
-        uint256 total = ticketPrice * _tickets.length;
-        require(usdc.transferFrom(msg.sender, address(this), total), "USDC pull failed");
-
-        // Credit referral fees (10% to the single referrer in our tests).
-        uint256 refFee = (total * referralFeeBps) / 10_000;
-        referralBalance[_referrers[0]] += refFee;
-
-        ticketIds = new uint256[](_tickets.length);
-        for (uint256 i = 0; i < _tickets.length; i++) {
-            uint256 id = nextTicketId++;
-            ticketIds[i] = id;
-            drawingsData[currentDrawingId].ticketOwner[id] = _recipient;
-        }
+    /// @notice Mint a ticket to `recipient` under the current drawing. Called by the
+    ///         MockRandomTicketBuyer, mirroring Megapot minting a quick-pick ticket NFT.
+    function mintTicket(address recipient) external returns (uint256 id) {
+        id = nextTicketId++;
+        drawingsData[currentDrawingId].ticketOwner[id] = recipient;
     }
 
     function claimWinnings(uint256[] calldata _userTicketIds) external {

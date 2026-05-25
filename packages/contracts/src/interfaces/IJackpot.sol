@@ -8,11 +8,6 @@ pragma solidity ^0.8.24;
  *      Deployed at 0x3bAe643002069dBCbcd62B1A4eb4C4A397d042a2 (Base mainnet).
  */
 interface IJackpot {
-    struct Ticket {
-        uint8[] normals;
-        uint8 bonusball;
-    }
-
     struct DrawingState {
         uint256 prizePool;
         uint256 ticketPrice;
@@ -28,21 +23,6 @@ interface IJackpot {
         address payoutCalculator;
         bool jackpotLock;
     }
-
-    /// @notice Buy 1..10 tickets in one call. For quick-picks, pass `Ticket(normals: [], bonusball: 0)`.
-    /// @param _tickets       Array of ticket specs; ≤ 10 entries.
-    /// @param _recipient     Address that receives the ticket NFTs and can later claim winnings.
-    /// @param _referrers     Up to `maxReferrers` addresses earning the referral fee + win share.
-    /// @param _referralSplit Weights matching `_referrers`, in 1e18 scale, summing to exactly 1e18.
-    /// @param _source        Analytics tag; Megapot convention is keccak256 of the app name, e.g. keccak256("pennypot").
-    /// @return ticketIds     The user-facing ticket IDs (one per entry in _tickets).
-    function buyTickets(
-        Ticket[] calldata _tickets,
-        address _recipient,
-        address[] calldata _referrers,
-        uint256[] calldata _referralSplit,
-        bytes32 _source
-    ) external returns (uint256[] memory ticketIds);
 
     /// @notice Claim winnings for one or more owned tickets in the most recently settled drawing.
     ///         Burns the NFTs and transfers USDC to msg.sender.
