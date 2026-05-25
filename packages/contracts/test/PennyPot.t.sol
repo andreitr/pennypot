@@ -119,14 +119,14 @@ contract PennyPotTest is Test {
         pot.claimWinnings(_ids(id1, id2));
 
         // All tickets in tier 0 (lose) by default => no winnings.
-        assertEq(pot.getPendingWinningsForDrawing(drawingId, alice), 0);
-        assertEq(pot.getPendingWinningsForDrawing(drawingId, bob), 0);
-        assertEq(pot.getPendingWinningsForDrawing(drawingId, carol), 0);
+        assertEq(pot.claimable(alice), 0);
+        assertEq(pot.claimable(bob), 0);
+        assertEq(pot.claimable(carol), 0);
 
         // Withdraw reverts since nothing owed.
         vm.expectRevert(PennyPot.NothingToWithdraw.selector);
         vm.prank(alice);
-        pot.withdraw(_ids(id1, id2));
+        pot.withdraw();
     }
 
     // ----- Happy path: winning ticket, pro-rata payout -------------------
@@ -149,24 +149,24 @@ contract PennyPotTest is Test {
         pot.claimWinnings(_ids(id1));
 
         // winningsPerShare = 1000_000_000 / 100 = 10_000_000.
-        assertEq(pot.getPendingWinnings(alice, _ids(id1)), 250_000_000);
-        assertEq(pot.getPendingWinnings(bob, _ids(id1)), 750_000_000);
+        assertEq(pot.claimable(alice), 250_000_000);
+        assertEq(pot.claimable(bob), 750_000_000);
 
         // Withdraw both; each balance rises by exactly the winnings owed.
         uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
-        pot.withdraw(_ids(id1));
+        pot.withdraw();
         assertEq(usdc.balanceOf(alice) - aliceBefore, 250_000_000);
 
         uint256 bobBefore = usdc.balanceOf(bob);
         vm.prank(bob);
-        pot.withdraw(_ids(id1));
+        pot.withdraw();
         assertEq(usdc.balanceOf(bob) - bobBefore, 750_000_000);
 
-        // Double-withdraw reverts (shares zeroed).
+        // Double-withdraw reverts (claimable balance zeroed).
         vm.expectRevert(PennyPot.NothingToWithdraw.selector);
         vm.prank(alice);
-        pot.withdraw(_ids(id1));
+        pot.withdraw();
     }
 
     // ----- Undersubscription amplifies payout per share -------------------
@@ -187,11 +187,11 @@ contract PennyPotTest is Test {
 
         // winningsPerShare = 1000_000_000 / 10 = 100_000_000 (100 USDC per share!)
         // Alice owns 10 shares -> 1000 USDC owed; her 0.10 USDC bought all of it.
-        assertEq(pot.getPendingWinnings(alice, _ids(id1)), 1000_000_000);
+        assertEq(pot.claimable(alice), 1000_000_000);
 
         uint256 aliceBefore = usdc.balanceOf(alice);
         vm.prank(alice);
-        pot.withdraw(_ids(id1));
+        pot.withdraw();
         assertEq(usdc.balanceOf(alice) - aliceBefore, 1000_000_000);
     }
 
@@ -322,9 +322,74 @@ contract PennyPotTest is Test {
         uint256 id1 = _buyTicket();
         vm.warp(block.timestamp + DRAWING_DURATION + 1);
 
-        // Megapot not settled => its claimWinnings reverts.
-        vm.expectRevert(bytes("not settled"));
+        // The ticket's drawing is not settled => reverts.
+        vm.expectRevert(PennyPot.DrawingNotSettled.selector);
         pot.claimWinnings(_ids(id1));
+    }
+
+    function test_claimWinnings_skipsLosersInBatch() public {
+        uint256 d = jackpot.currentDrawingId();
+        uint256 id1 = _buyTicket();
+        vm.prank(alice);
+        pot.buyTicketShares(id1, 100); // winner
+        uint256 id2 = _buyTicket();
+        vm.prank(bob);
+        pot.buyTicketShares(id2, 100); // loser (tier 0)
+
+        jackpot.setTicketTier(d, id1, 11);
+        jackpot.setTierPayout(d, 11, 100_000_000); // 100 USDC
+
+        vm.warp(block.timestamp + DRAWING_DURATION + 1);
+        usdc.mint(address(jackpot), 100_000_000);
+        jackpot.settleDrawing();
+
+        // Batch includes a loser; must NOT revert (the core #1 fix), winner still settled.
+        pot.claimWinnings(_ids(id1, id2));
+
+        assertEq(pot.claimable(alice), 100_000_000);
+        (,,, bool claimed2) = pot.getTicket(id2);
+        assertTrue(claimed2); // loser marked settled
+        assertEq(pot.claimable(bob), 0);
+    }
+
+    function test_claimWinnings_zeroShareWinner_creditsReserve() public {
+        uint256 d = jackpot.currentDrawingId();
+        uint256 id1 = _buyTicket(); // nobody buys shares -> sold 0
+        uint256 reserveAfterBuy = pot.reservePool(); // SEED - 1 USDC
+
+        jackpot.setTicketTier(d, id1, 11);
+        jackpot.setTierPayout(d, 11, 50_000_000); // 50 USDC
+
+        vm.warp(block.timestamp + DRAWING_DURATION + 1);
+        usdc.mint(address(jackpot), 50_000_000);
+        jackpot.settleDrawing();
+        pot.claimWinnings(_ids(id1));
+
+        // 0-share win is not stranded: the whole payout goes to the reserve.
+        assertEq(pot.reservePool(), reserveAfterBuy + 50_000_000);
+        (,, uint256 wps,) = pot.getTicket(id1);
+        assertEq(wps, 0);
+    }
+
+    function test_claimWinnings_roundingDust_creditsReserve() public {
+        uint256 d = jackpot.currentDrawingId();
+        uint256 id1 = _buyTicket();
+        vm.prank(alice);
+        pot.buyTicketShares(id1, 3); // 3 shares
+        uint256 reserveBefore = pot.reservePool();
+
+        jackpot.setTicketTier(d, id1, 11);
+        jackpot.setTierPayout(d, 11, 1_000_000); // 1 USDC / 3 shares -> wps 333_333, dust 1
+
+        vm.warp(block.timestamp + DRAWING_DURATION + 1);
+        usdc.mint(address(jackpot), 1_000_000);
+        jackpot.settleDrawing();
+        pot.claimWinnings(_ids(id1));
+
+        (,, uint256 wps,) = pot.getTicket(id1);
+        assertEq(wps, 333_333);
+        // dust = 1_000_000 - 333_333*3 = 1, credited to the reserve.
+        assertEq(pot.reservePool(), reserveBefore + 1);
     }
 
     function test_claimWinnings_emptyArray_isNoop() public {
@@ -433,7 +498,7 @@ contract PennyPotTest is Test {
         pot.claimWinnings(_ids(id1));
 
         uint256 reserve = pot.reservePool();
-        uint256 aliceOwed = pot.getPendingWinnings(alice, _ids(id1));
+        uint256 aliceOwed = pot.claimable(alice);
         uint256 contractBalance = usdc.balanceOf(address(pot));
 
         assertEq(reserve, SEED_RESERVE, "reserve should be back to seed");

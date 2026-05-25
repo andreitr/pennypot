@@ -36,8 +36,8 @@ interface IERC20 {
  *
  *           - buyTicket()                     : front + buy the next Megapot ticket
  *           - buyTicketShares(ticketId, count): buy 1..N shares of the active ticket
- *           - claimWinnings(ticketIds[])      : pull each ticket's winnings from Megapot
- *           - withdraw(ticketIds[])           : pull caller's share of claimed winnings
+ *           - claimWinnings(ticketIds[])      : settle tickets; credit each holder's balance
+ *           - withdraw()                      : pull the caller's credited winnings
  *
  *         A drawingId -> ticketIds[] index is kept only as a read convenience
  *         (`getDrawingTicketIds`); it never gates contract logic.
@@ -109,19 +109,27 @@ contract PennyPot is Ownable2Step, Pausable {
     ///         distinguish a claimed-losing ticket (wps 0) from an unclaimed one.
     mapping(uint256 => bool) public claimedOf;
 
+    /// @notice Per-user withdrawable USDC, credited when their winning tickets are claimed.
+    ///         Players read `claimable(addr)` and pull it all with `withdraw()`.
+    mapping(address => uint256) public claimable;
+
     /// @notice sharesOf[ticketId][user] => count of shares this user owns on that ticket.
-    ///         Zeroed in `withdraw` once the ticket is claimed.
+    ///         A permanent record of purchases (winnings are credited to `claimable` at
+    ///         claim time, so this is never zeroed).
     mapping(uint256 => mapping(address => uint8)) internal sharesOf;
 
     /// @notice ticketId => holder addresses, in first-purchase order. Bounded to 100
-    ///         per ticket (100 shares, ≥1 each). Append-only; entries are kept after a
-    ///         holder withdraws (their share count just reads 0). Read convenience for
-    ///         the per-ticket cap table.
+    ///         per ticket (100 shares, ≥1 each). One entry per holder. Read convenience
+    ///         for the per-ticket cap table.
     mapping(uint256 => address[]) internal ticketHolders;
 
     /// @notice drawingId => Megapot ticket ids bought under it. Read convenience only;
     ///         lets a caller enumerate a drawing's tickets without an off-chain index.
     mapping(uint256 => uint256[]) internal drawingTickets;
+
+    /// @notice ticketId => the Megapot drawing it was bought into. Used by claimWinnings
+    ///         to gate each ticket on its OWN drawing's settlement.
+    mapping(uint256 => uint256) public ticketDrawingId;
 
     /// @notice USDC owned by the reserve. Fronts every ticket; replenished by share
     ///         purchases. Decreases only on buyTicket and owner withdrawals.
@@ -152,6 +160,7 @@ contract PennyPot is Ownable2Step, Pausable {
     error PastSellingWindow();
     error MegapotTicketPriceMismatch(uint256 expected, uint256 actual);
     error ReserveTooLowForTicket(uint256 reserve, uint256 needed);
+    error DrawingNotSettled();
     error NothingToWithdraw();
     error InsufficientReserve();
     error ApprovalFailed();
@@ -218,26 +227,17 @@ contract PennyPot is Ownable2Step, Pausable {
         if (newSold == SHARES_PER_TICKET) emit TicketFilled(active);
     }
 
-    /// @notice Withdraw the caller's winnings across the given (claimed) tickets.
-    ///         Tickets not yet claimed are skipped and left intact for a later call;
-    ///         claimed tickets are consumed (shares zeroed) whether winning or losing.
-    function withdraw(uint256[] calldata ticketIds) external {
-        uint256 owed;
-        for (uint256 i = 0; i < ticketIds.length; i++) {
-            uint256 id = ticketIds[i];
-            uint8 userShares = sharesOf[id][msg.sender];
-            if (userShares == 0) continue;
-            if (!claimedOf[id]) continue; // not settled yet; keep shares for later
+    /// @notice Withdraw all of the caller's credited winnings. Balances are credited by
+    ///         `claimWinnings` when a winning ticket the caller holds is settled, so this
+    ///         needs no ticket ids — just read `claimable(addr)` and pull.
+    function withdraw() external {
+        uint256 amount = claimable[msg.sender];
+        if (amount == 0) revert NothingToWithdraw();
 
-            sharesOf[id][msg.sender] = 0; // settled (win or lose) -> consume
-            uint256 wps = winningsPerShareOf[id];
-            if (wps > 0) owed += uint256(userShares) * wps;
-        }
+        claimable[msg.sender] = 0;
+        if (!USDC.transfer(msg.sender, amount)) revert ApprovalFailed();
 
-        if (owed == 0) revert NothingToWithdraw();
-        if (!USDC.transfer(msg.sender, owed)) revert ApprovalFailed();
-
-        emit WinningsWithdrawn(msg.sender, owed);
+        emit WinningsWithdrawn(msg.sender, amount);
     }
 
     // -----------------------------------------------------------------------
@@ -279,39 +279,63 @@ contract PennyPot is Ownable2Step, Pausable {
         activeTicketId = newId;
         activeDeadline = uint64(ms.drawingTime);
         drawingTickets[drawingId].push(newId);
+        ticketDrawingId[newId] = drawingId;
 
         emit TicketBought(drawingId, newId, msg.sender);
     }
 
-    /// @notice Claim each ticket's winnings from Megapot and record its winningsPerShare.
-    ///         Permissionless. Already-claimed tickets are skipped; tickets whose drawing
-    ///         has not settled cause Megapot's claimWinnings to revert.
+    /// @notice Settle the given tickets: claim winners from Megapot and record each
+    ///         winningsPerShare. Permissionless. Already-claimed tickets are skipped.
     ///
-    /// @dev    Claims one ticket at a time, measuring the USDC delta to attribute that
-    ///         ticket's payout. Winnings from a 0-share ticket stay in the contract
-    ///         balance (winningsPerShare can't be computed); rare by construction.
+    /// @dev    Megapot's claimWinnings REVERTS on a non-winning ticket, so we check the
+    ///         tier first (winner == tier > 0 && tier != 2) and only claim winners;
+    ///         losers are marked settled with 0. Each ticket is gated on its OWN
+    ///         drawing's settlement (via ticketDrawingId) so a live ticket can't be
+    ///         marked claimed by passing a stale/foreign drawing.
+    ///
+    ///         Winnings are attributed per ticket via the USDC balance delta. Anything
+    ///         not distributable to shareholders — a 0-share win, or per-share rounding
+    ///         dust — is credited to the reserve rather than stranded.
     function claimWinnings(uint256[] calldata ticketIds) external {
         for (uint256 i = 0; i < ticketIds.length; i++) {
             uint256 id = ticketIds[i];
             if (claimedOf[id]) continue;
 
+            // Ticket's own drawing must be settled. Unknown tickets map to drawing 0,
+            // which is never settled, so they revert here.
+            if (JACKPOT.getDrawingState(ticketDrawingId[id]).winningTicket == 0) revert DrawingNotSettled();
+
+            claimedOf[id] = true;
+
             uint256[] memory single = new uint256[](1);
             single[0] = id;
+
+            // tier 0 (no match) and tier 2 (1 normal, no bonusball) pay nothing.
+            uint256 tier = JACKPOT.getTicketTierIds(single)[0];
+            if (tier == 0 || tier == 2) {
+                emit TicketSettled(id, 0, 0);
+                continue;
+            }
 
             uint256 balBefore = USDC.balanceOf(address(this));
             JACKPOT.claimWinnings(single);
             uint256 ticketWin = USDC.balanceOf(address(this)) - balBefore;
 
-            claimedOf[id] = true;
-
             uint8 sold = soldOf[id];
-            if (ticketWin > 0 && sold > 0) {
-                uint256 wps = ticketWin / sold;
+            uint256 wps = sold > 0 ? ticketWin / sold : 0;
+            if (wps > 0) {
                 winningsPerShareOf[id] = wps;
-                emit TicketSettled(id, ticketWin, wps);
-            } else {
-                emit TicketSettled(id, ticketWin, 0);
+                // Credit each shareholder's withdrawable balance (<=100 holders).
+                address[] storage holders = ticketHolders[id];
+                for (uint256 h = 0; h < holders.length; h++) {
+                    address holder = holders[h];
+                    claimable[holder] += uint256(sharesOf[id][holder]) * wps;
+                }
             }
+            // Don't strand winnings: 0-share wins and rounding dust go to the reserve.
+            reservePool += ticketWin - wps * sold;
+
+            emit TicketSettled(id, ticketWin, wps);
         }
     }
 
@@ -423,9 +447,14 @@ contract PennyPot is Ownable2Step, Pausable {
         return sharesOf[ticketId][user];
     }
 
+    /// @notice A user's total withdrawable winnings (alias of the `claimable` getter).
+    function balance(address user) external view returns (uint256) {
+        return claimable[user];
+    }
+
     /// @notice The per-ticket cap table: holder addresses and their share counts (which
     ///         equal their percentage, since a ticket is 100 shares). Bounded to 100
-    ///         entries. Holders who have withdrawn remain listed with a 0 share count.
+    ///         entries.
     function getTicketHolders(uint256 ticketId)
         external
         view
@@ -435,28 +464,6 @@ contract PennyPot is Ownable2Step, Pausable {
         shareCounts = new uint8[](holders.length);
         for (uint256 i = 0; i < holders.length; i++) {
             shareCounts[i] = sharesOf[ticketId][holders[i]];
-        }
-    }
-
-    /// @notice Compute a user's total claimable USDC across the given tickets.
-    ///         View-only mirror of withdraw's logic (counts only claimed winners).
-    function getPendingWinnings(address user, uint256[] calldata ticketIds) public view returns (uint256 owed) {
-        for (uint256 i = 0; i < ticketIds.length; i++) {
-            uint256 id = ticketIds[i];
-            uint256 wps = winningsPerShareOf[id];
-            if (wps == 0) continue;
-            owed += uint256(sharesOf[id][user]) * wps;
-        }
-    }
-
-    /// @notice Convenience: a user's claimable USDC across every ticket in a drawing.
-    function getPendingWinningsForDrawing(uint256 drawingId, address user) external view returns (uint256 owed) {
-        uint256[] storage ids = drawingTickets[drawingId];
-        for (uint256 i = 0; i < ids.length; i++) {
-            uint256 id = ids[i];
-            uint256 wps = winningsPerShareOf[id];
-            if (wps == 0) continue;
-            owed += uint256(sharesOf[id][user]) * wps;
         }
     }
 }

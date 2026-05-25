@@ -86,8 +86,12 @@ contract MockJackpot {
             uint256 id = _userTicketIds[i];
             require(dd.ticketOwner[id] == msg.sender, "not owner");
             require(!dd.claimed[id], "already claimed");
+            // Megapot reverts when asked to claim a non-winning ticket (tier 0 = no
+            // match, tier 2 = 1 normal/no bonusball). Models NoTicketsToClaim().
+            uint256 tier = dd.ticketTier[id];
+            require(tier != 0 && tier != 2, "NoTicketsToClaim");
             dd.claimed[id] = true;
-            total += dd.tierPayouts[dd.ticketTier[id]];
+            total += dd.tierPayouts[tier];
         }
         if (total > 0) {
             require(usdc.transfer(msg.sender, total), "USDC send failed");

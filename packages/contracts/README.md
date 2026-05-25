@@ -50,14 +50,18 @@ buyTicket() ──► Jackpot.buyTickets(recipient=PennyPot, referrer=feeReceive
 
 Megapot settles (winningTicket != 0):
   claimWinnings([ticketIds])
-    For each ticket: Jackpot.claimWinnings([id]), measure USDC delta,
+    Skip losers (Megapot reverts on tier 0/2); for each winner:
+    Jackpot.claimWinnings([id]), measure USDC delta,
     set winningsPerShare = ticketWin / sharesSold
-    (undersubscribed tickets amplify per-share payout)
+    (undersubscribed tickets amplify per-share payout; any 0-share win
+     or rounding dust is credited to the reserve, not stranded)
+
+    claimWinnings also credits each winner's shareholders: claimable[holder] += shares × wps
 
 Users:
-  withdraw([ticketIds])
-    Sums their shares × winningsPerShare across the given (claimed) tickets,
-    zeroes those entries, single USDC transfer.
+  withdraw()
+    Sends the caller's whole claimable balance in one transfer. No ticket ids:
+    read claimable(addr) for the balance.
 ```
 
 ## Key design decisions (locked in)
@@ -79,7 +83,7 @@ Users:
 | Drawing lifecycle on-chain | **None** — keyed off Megapot ticket IDs; drawings indexed off-chain |
 | Settlement crank | `claimWinnings([ticketIds])`, permissionless; gated by Megapot, not internal state |
 | MIN_SELLING_WINDOW | 1 hour before drawing close |
-| Claim pattern | Permissionless `claimWinnings` + user-pulled `withdraw([ticketIds])` |
+| Claim pattern | Permissionless `claimWinnings` credits balances; user-pulled `withdraw()` |
 | Upgradeability | None — redeploy if needed |
 
 ## Functions
@@ -89,14 +93,15 @@ Users:
 - `buyTicketShares(uint256 expectedTicketId, uint8 count)` — buy 1..N shares of the active
   ticket. `expectedTicketId` guards against the active ticket rolling over between
   submit and execution.
-- `withdraw(uint256[] ticketIds)` — pull owed USDC across the given claimed tickets.
+- `withdraw()` — pull the caller's entire credited winnings balance (no ticket ids).
 
 ### Permissionless cranks
 
 - `buyTicket()` — front + buy the next Megapot ticket (into the current drawing);
   allowed only when the active ticket is full or its drawing's window has ended.
-- `claimWinnings(uint256[] ticketIds)` — claim each ticket's winnings from Megapot and set its
-  `winningsPerShare`. Idempotent (already-claimed tickets skipped).
+- `claimWinnings(uint256[] ticketIds)` — settle tickets: skip losers, claim winners from
+  Megapot, set each `winningsPerShare`. Permissionless, idempotent; each ticket gated on
+  its own drawing's settlement (via `ticketDrawingId`).
 
 ### Owner
 
@@ -120,8 +125,8 @@ Ownership and pause are OpenZeppelin's `Ownable2Step` + `Pausable`.
   also available directly from `getTicket(ticketId).holderCount`.
 - `getDrawingTicketIds(drawingId)`, `getDrawingTicketCount(drawingId)` — enumerate a
   drawing's tickets without an off-chain index.
-- `getPendingWinnings(addr, ticketIds[])` — claimable USDC across explicit tickets.
-- `getPendingWinningsForDrawing(drawingId, addr)` — same, across a whole drawing.
+- `ticketDrawingId(ticketId)` — the drawing a ticket was bought into.
+- `balance(addr)` / `claimable(addr)` — the user's total withdrawable winnings (O(1)).
 
 ## Reserve economics
 
@@ -180,9 +185,6 @@ forge test -vv
 
 - **`ticketPrice` change on Megapot bricks the contract.** `buyTicket` reverts if
   `Jackpot.ticketPrice() != 1 USDC`. If Megapot governance changes this, redeploy.
-- **Winnings from a 0-share ticket stay in the contract balance.** If the reserve
-  fronts a ticket nobody buys shares of and it wins, `winningsPerShare` can't be
-  computed; the USDC remains in the balance (rare by construction).
 - **No on-chain "drawings I've participated in".** By design — reconstruct user history
   off-chain from `SharesBought` / `TicketBought` events (indexed).
 
