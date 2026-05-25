@@ -10,7 +10,7 @@ import {PennyPot} from "../src/PennyPot.sol";
 ///   JACKPOT_ADDRESS - Megapot Jackpot       (default: Base Jackpot)
 ///   FEE_RECEIVER    - Megapot referrer that earns referral fees + win share
 ///                     (default: PennyPot's canonical referral address)
-///   OWNER_ADDRESS   - initial owner         (default: the broadcaster)
+///   OWNER_ADDRESS   - initial owner         (default: INITIAL_OWNER below)
 ///
 /// Usage:
 ///   forge script script/Deploy.s.sol:Deploy --rpc-url $RPC_URL --broadcast --verify
@@ -23,11 +23,14 @@ contract Deploy is Script {
     ///         every ticket buy (matches the contract's feeReceiver wiring).
     address internal constant REFERRAL_RECEIVER = 0xDAdA5bAd8cdcB9e323d0606d081E6Dc5D3a577a1;
 
+    /// @notice Initial contract owner (reserve management + pause).
+    address internal constant INITIAL_OWNER = 0x1d671d1B191323A38490972D58354971E5c1cd2A;
+
     function run() external returns (PennyPot pennyPot) {
         address usdc = vm.envOr("USDC_ADDRESS", BASE_USDC);
         address jackpot = vm.envOr("JACKPOT_ADDRESS", BASE_JACKPOT);
         address feeReceiver = vm.envOr("FEE_RECEIVER", REFERRAL_RECEIVER);
-        address owner = vm.envOr("OWNER_ADDRESS", msg.sender);
+        address owner = vm.envOr("OWNER_ADDRESS", INITIAL_OWNER);
 
         vm.startBroadcast();
         pennyPot = new PennyPot(usdc, jackpot, feeReceiver, owner);

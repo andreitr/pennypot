@@ -16,3 +16,9 @@ remappings = [
 [fmt]
 line_length = 120
 tab_width = 4
+
+# Etherscan API V2 (the V1 verification endpoint is deprecated). A single
+# etherscan.io API key works across chains; the chain id is sent automatically.
+# Set ETHERSCAN_API_KEY to an etherscan.io key, then deploy with --verify.
+[etherscan]
+base = { key = "${ETHERSCAN_API_KEY}", chain = 8453, url = "https://api.etherscan.io/v2/api" }
