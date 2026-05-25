@@ -110,9 +110,14 @@ Ownership and pause are OpenZeppelin's `Ownable2Step` + `Pausable`.
 
 ### Reads (for UI)
 
-- `activeTicketId()`, `activeDeadline()` — what's selling and until when.
-- `getTicket(ticketId)` → `(sold, winningsPerShare, claimed)`.
-- `getTicketShares(ticketId, addr)`.
+- `getState()` → `(currentDrawingId, currentTicketId, sold, deadline, canBuyNextTicket,
+  reserve, isPaused)` — one-call dashboard snapshot; `canBuyNextTicket` mirrors
+  `buyTicket()`'s guards.
+- `getTicket(ticketId)` → `(shares, holders, winningsPerShare, claimed)`.
+- `getTicketShares(ticketId, addr)` — one holder's share count.
+- `getTicketHolders(ticketId)` → `(address[] holders, uint8[] shareCounts)` — the
+  per-ticket cap table (share count = %, bounded to 100 entries). The owner *count* is
+  also available directly from `getTicket(ticketId).holderCount`.
 - `getDrawingTicketIds(drawingId)`, `getDrawingTicketCount(drawingId)` — enumerate a
   drawing's tickets without an off-chain index.
 - `getPendingWinnings(addr, ticketIds[])` — claimable USDC across explicit tickets.

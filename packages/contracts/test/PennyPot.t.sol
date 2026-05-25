@@ -99,7 +99,7 @@ contract PennyPotTest is Test {
         pot.buyTicketShares(id1, 50);
 
         // Ticket filled; reserve fully replenished.
-        (uint8 sold,,) = pot.getTicket(id1);
+        (uint8 sold,,,) = pot.getTicket(id1);
         assertEq(sold, 100);
         assertEq(pot.reservePool(), SEED_RESERVE);
 
@@ -347,7 +347,7 @@ contract PennyPotTest is Test {
         // Second claim is a no-op (already claimed); would otherwise revert on Megapot.
         pot.claimWinnings(_ids(id1));
 
-        (, uint256 wps, bool claimed) = pot.getTicket(id1);
+        (,, uint256 wps, bool claimed) = pot.getTicket(id1);
         assertTrue(claimed);
         assertEq(wps, 1_000_000); // 100 USDC / 100 shares
     }
@@ -485,5 +485,27 @@ contract PennyPotTest is Test {
         pot.withdrawReserve(SEED_RESERVE, owner);
         (,,,, bool canBuy,,) = pot.getState();
         assertFalse(canBuy);
+    }
+
+    // ----- getTicketHolders (cap table) ----------------------------------
+
+    function test_getTicketHolders_listsOwnersAndShares() public {
+        uint256 id1 = _buyTicket();
+        vm.prank(alice);
+        pot.buyTicketShares(id1, 30);
+        vm.prank(bob);
+        pot.buyTicketShares(id1, 20);
+        vm.prank(alice);
+        pot.buyTicketShares(id1, 10); // alice again: no duplicate entry, total 40
+
+        (, uint8 holderCount,,) = pot.getTicket(id1);
+        assertEq(holderCount, 2);
+
+        (address[] memory holders, uint8[] memory shareCounts) = pot.getTicketHolders(id1);
+        assertEq(holders.length, 2);
+        assertEq(holders[0], alice);
+        assertEq(shareCounts[0], 40);
+        assertEq(holders[1], bob);
+        assertEq(shareCounts[1], 20);
     }
 }

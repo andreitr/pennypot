@@ -109,9 +109,15 @@ contract PennyPot is Ownable2Step, Pausable {
     ///         distinguish a claimed-losing ticket (wps 0) from an unclaimed one.
     mapping(uint256 => bool) public claimedOf;
 
-    /// @notice shares[ticketId][user] => count of shares this user owns on that ticket.
+    /// @notice sharesOf[ticketId][user] => count of shares this user owns on that ticket.
     ///         Zeroed in `withdraw` once the ticket is claimed.
-    mapping(uint256 => mapping(address => uint8)) internal shares;
+    mapping(uint256 => mapping(address => uint8)) internal sharesOf;
+
+    /// @notice ticketId => holder addresses, in first-purchase order. Bounded to 100
+    ///         per ticket (100 shares, ≥1 each). Append-only; entries are kept after a
+    ///         holder withdraws (their share count just reads 0). Read convenience for
+    ///         the per-ticket cap table.
+    mapping(uint256 => address[]) internal ticketHolders;
 
     /// @notice drawingId => Megapot ticket ids bought under it. Read convenience only;
     ///         lets a caller enumerate a drawing's tickets without an off-chain index.
@@ -204,7 +210,9 @@ contract PennyPot is Ownable2Step, Pausable {
         reservePool += cost;
 
         soldOf[active] = uint8(newSold);
-        shares[active][msg.sender] += count;
+        // Record a new holder on their first share of this ticket (bounded to 100).
+        if (sharesOf[active][msg.sender] == 0) ticketHolders[active].push(msg.sender);
+        sharesOf[active][msg.sender] += count;
 
         emit SharesBought(active, msg.sender, count, uint8(newSold));
         if (newSold == SHARES_PER_TICKET) emit TicketFilled(active);
@@ -217,11 +225,11 @@ contract PennyPot is Ownable2Step, Pausable {
         uint256 owed;
         for (uint256 i = 0; i < ticketIds.length; i++) {
             uint256 id = ticketIds[i];
-            uint8 userShares = shares[id][msg.sender];
+            uint8 userShares = sharesOf[id][msg.sender];
             if (userShares == 0) continue;
             if (!claimedOf[id]) continue; // not settled yet; keep shares for later
 
-            shares[id][msg.sender] = 0; // settled (win or lose) -> consume
+            sharesOf[id][msg.sender] = 0; // settled (win or lose) -> consume
             uint256 wps = winningsPerShareOf[id];
             if (wps > 0) owed += uint256(userShares) * wps;
         }
@@ -397,12 +405,37 @@ contract PennyPot is Ownable2Step, Pausable {
         return drawingTickets[drawingId].length;
     }
 
-    function getTicket(uint256 ticketId) external view returns (uint8 sold, uint256 winningsPerShare, bool claimed) {
-        return (soldOf[ticketId], winningsPerShareOf[ticketId], claimedOf[ticketId]);
+    /// @notice Per-ticket detail in one call.
+    /// @return shares           Shares sold (0..100), i.e. % subscribed.
+    /// @return holders          Distinct owners so far (<= 100; includes any who withdrew).
+    /// @return winningsPerShare USDC per share, set by claimWinnings; 0 if losing/unclaimed.
+    /// @return claimed          Whether claimWinnings has settled this ticket.
+    function getTicket(uint256 ticketId)
+        external
+        view
+        returns (uint8 shares, uint8 holders, uint256 winningsPerShare, bool claimed)
+    {
+        return
+            (soldOf[ticketId], uint8(ticketHolders[ticketId].length), winningsPerShareOf[ticketId], claimedOf[ticketId]);
     }
 
     function getTicketShares(uint256 ticketId, address user) external view returns (uint8) {
-        return shares[ticketId][user];
+        return sharesOf[ticketId][user];
+    }
+
+    /// @notice The per-ticket cap table: holder addresses and their share counts (which
+    ///         equal their percentage, since a ticket is 100 shares). Bounded to 100
+    ///         entries. Holders who have withdrawn remain listed with a 0 share count.
+    function getTicketHolders(uint256 ticketId)
+        external
+        view
+        returns (address[] memory holders, uint8[] memory shareCounts)
+    {
+        holders = ticketHolders[ticketId];
+        shareCounts = new uint8[](holders.length);
+        for (uint256 i = 0; i < holders.length; i++) {
+            shareCounts[i] = sharesOf[ticketId][holders[i]];
+        }
     }
 
     /// @notice Compute a user's total claimable USDC across the given tickets.
@@ -412,7 +445,7 @@ contract PennyPot is Ownable2Step, Pausable {
             uint256 id = ticketIds[i];
             uint256 wps = winningsPerShareOf[id];
             if (wps == 0) continue;
-            owed += uint256(shares[id][user]) * wps;
+            owed += uint256(sharesOf[id][user]) * wps;
         }
     }
 
@@ -423,7 +456,7 @@ contract PennyPot is Ownable2Step, Pausable {
             uint256 id = ids[i];
             uint256 wps = winningsPerShareOf[id];
             if (wps == 0) continue;
-            owed += uint256(shares[id][user]) * wps;
+            owed += uint256(sharesOf[id][user]) * wps;
         }
     }
 }
