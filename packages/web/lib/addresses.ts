@@ -1,0 +1,21 @@
+import type { Address } from "viem";
+
+// Base mainnet (chain id 8453). Defaults wired to the live PennyPot deployment;
+// override via NEXT_PUBLIC_* env vars if you point at a different deployment.
+
+const env = process.env;
+
+export const PENNYPOT_ADDRESS = (env.NEXT_PUBLIC_PENNYPOT_ADDRESS ??
+  "0xdCc075040Cf5888dBa26E9871427949BAb7591ba") as Address;
+
+export const USDC_ADDRESS = (env.NEXT_PUBLIC_USDC_ADDRESS ??
+  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913") as Address;
+
+export const JACKPOT_ADDRESS = (env.NEXT_PUBLIC_JACKPOT_ADDRESS ??
+  "0x3bAe643002069dBCbcd62B1A4eb4C4A397d042a2") as Address;
+
+// Floor for SharesBought log queries. Set NEXT_PUBLIC_PENNYPOT_DEPLOY_BLOCK to the
+// exact deploy block for faster reads; the default is a safe earlier block on Base.
+export const PENNYPOT_DEPLOY_BLOCK = BigInt(
+  env.NEXT_PUBLIC_PENNYPOT_DEPLOY_BLOCK ?? "46470000",
+);

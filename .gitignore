@@ -26,3 +26,6 @@ coverage/
 *.log
 .vscode/
 .idea/
+
+# Claude Code personal settings (the shared .claude/launch.json IS tracked)
+.claude/settings.local.json
