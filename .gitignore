@@ -2,9 +2,11 @@
 out/
 cache/
 
-# Foundry broadcast logs: keep deploy records, drop local/dry-run noise
-broadcast/*/31337/
-broadcast/**/dry-run/
+# Foundry broadcast logs: keep run-latest.json, drop per-run + local/dry-run noise.
+# (Leading **/ so the patterns match the nested packages/contracts/broadcast/ path.)
+**/broadcast/**/run-[0-9]*.json
+**/broadcast/*/31337/
+**/broadcast/**/dry-run/
 
 # Node / webapp
 node_modules/
