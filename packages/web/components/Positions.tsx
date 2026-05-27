@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { toast } from "sonner";
 import {
   useAccount,
+  useChainId,
+  usePublicClient,
   useReadContracts,
-  useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
 import { base } from "wagmi/chains";
@@ -15,9 +18,11 @@ import { useClaimable, useUserPositions } from "@/lib/hooks";
 
 export function Positions() {
   const { address } = useAccount();
+  const chainId = useChainId();
+  const wrongChain = !!address && chainId !== base.id;
+  const queryClient = useQueryClient();
   const claimable = useClaimable(address);
   const { positions, loading, error } = useUserPositions(address);
-  const [pendingHash, setPendingHash] = useState<`0x${string}` | undefined>();
 
   // Per-ticket details for the user's positions (so we can show settlement state).
   const ticketDetail = useReadContracts({
@@ -66,24 +71,65 @@ export function Positions() {
     },
   });
 
-  const { writeContract, isPending, error: writeError } = useWriteContract({
-    mutation: { onSuccess: (h) => setPendingHash(h) },
-  });
-  const waiting = useWaitForTransactionReceipt({ hash: pendingHash });
-  useEffect(() => {
-    if (waiting.isSuccess) {
-      claimable.refetch();
-      setPendingHash(undefined);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waiting.isSuccess]);
+  const publicClient = usePublicClient({ chainId: base.id });
+  const { writeContractAsync } = useWriteContract();
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [writeError, setWriteError] = useState<string | undefined>();
 
-  function doWithdraw() {
-    writeContract({
-      address: PENNYPOT_ADDRESS,
-      abi: pennypotAbi,
-      functionName: "withdraw",
-    });
+  async function doWithdraw() {
+    if (!publicClient || !address) return;
+    const amount = claimable.data ?? 0n;
+    setWriteError(undefined);
+    setWithdrawing(true);
+    const toastId = toast.loading(
+      `Withdrawing ${formatUsdc(amount)}… (confirm in wallet)`,
+    );
+    try {
+      const hash = await writeContractAsync({
+        address: PENNYPOT_ADDRESS,
+        abi: pennypotAbi,
+        functionName: "withdraw",
+      });
+      toast.loading(`Waiting for withdrawal to confirm on-chain…`, {
+        id: toastId,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+
+      // Anchor the post-tx read to the receipt's block so RPC node lag can't
+      // serve stale data — poll up to ~6s until we observe the cleared balance.
+      for (let i = 0; i < 12; i++) {
+        try {
+          const newBalance = (await publicClient.readContract({
+            address: PENNYPOT_ADDRESS,
+            abi: pennypotAbi,
+            functionName: "balance",
+            args: [address],
+            blockNumber: receipt.blockNumber,
+          })) as bigint;
+          if (newBalance < amount) break;
+        } catch {
+          // RPC behind on this block — wait and retry.
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      queryClient.invalidateQueries();
+      toast.success(`Withdrew ${formatUsdc(amount)}`, {
+        id: toastId,
+        description: `Sent to your wallet on Base.`,
+        duration: 6000,
+      });
+    } catch (e) {
+      const msg = (e as Error).message.split("\n")[0];
+      const userRejected = /reject|denied|user/i.test(msg);
+      toast.error(userRejected ? "Wallet rejected the request" : "Withdrawal failed", {
+        id: toastId,
+        description: userRejected ? undefined : msg.slice(0, 180),
+      });
+      setWriteError(msg);
+    } finally {
+      setWithdrawing(false);
+    }
   }
 
   return (
@@ -112,24 +158,25 @@ export function Positions() {
                 type="button"
                 onClick={doWithdraw}
                 disabled={
-                  isPending ||
-                  waiting.isLoading ||
+                  wrongChain ||
+                  withdrawing ||
                   !claimable.data ||
                   claimable.data === 0n
                 }
                 className="rounded-xl bg-accent px-4 py-3 font-mono text-base font-bold text-ink-900 transition disabled:opacity-50 hover:shadow-glow"
               >
-                {isPending || waiting.isLoading ? "withdrawing…" : "Withdraw"}
+                {wrongChain
+                  ? "switch to Base"
+                  : withdrawing
+                    ? "withdrawing…"
+                    : "Withdraw"}
               </button>
             </div>
 
             {writeError ? (
               <div className="mt-2 break-all text-xs text-accent">
-                {writeError.message.split("\n")[0]}
+                {writeError}
               </div>
-            ) : null}
-            {waiting.isSuccess ? (
-              <div className="mt-2 text-xs text-accent">Withdrawn ✓</div>
             ) : null}
 
             {/* Per-ticket history */}

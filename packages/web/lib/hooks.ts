@@ -1,16 +1,16 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import type { Address } from "viem";
 import {
   useAccount,
-  useChainId,
   usePublicClient,
   useReadContract,
   useReadContracts,
 } from "wagmi";
 import { base } from "wagmi/chains";
-import { erc20Abi, jackpotAbi, pennypotAbi } from "./abis";
+import { erc20Abi, jackpotAbi, payoutCalculatorAbi, pennypotAbi } from "./abis";
 import {
   JACKPOT_ADDRESS,
   PENNYPOT_ADDRESS,
@@ -29,8 +29,11 @@ export function useGetState() {
   });
 }
 
-// Megapot drawing close (canonical "time to drawing close" — handles rollover
-// edges where the active ticket belongs to a just-closed drawing).
+// Megapot drawing close + top prize tier (canonical "time to drawing close" —
+// handles rollover edges where the active ticket belongs to a just-closed
+// drawing). Also resolves the jackpot tier payout (index 11 = 5 normals +
+// bonusball) via Megapot's PayoutCalculator, reading the calculator address
+// from the drawing state itself so we follow any future rotation automatically.
 export function useMegapotDrawingTime() {
   const id = useReadContract({
     chainId: base.id,
@@ -47,9 +50,41 @@ export function useMegapotDrawingTime() {
     args: id.data !== undefined ? [id.data] : undefined,
     query: { enabled: id.data !== undefined, refetchInterval: 30_000 },
   });
+
+  // Top tier payout = element [11] of the PayoutCalculator's 12-tier array.
+  const drawingId = id.data;
+  const prizePool = state.data?.prizePool;
+  const ballMax = state.data?.ballMax;
+  const bonusballMax = state.data?.bonusballMax;
+  const payoutCalculator = state.data?.payoutCalculator as Address | undefined;
+  const tiers = useReadContract({
+    chainId: base.id,
+    address: payoutCalculator,
+    abi: payoutCalculatorAbi,
+    functionName: "getExpectedDrawingTierPayouts",
+    args:
+      drawingId !== undefined &&
+      prizePool !== undefined &&
+      ballMax !== undefined &&
+      bonusballMax !== undefined
+        ? [drawingId, prizePool, ballMax, bonusballMax]
+        : undefined,
+    query: {
+      enabled:
+        !!payoutCalculator &&
+        drawingId !== undefined &&
+        prizePool !== undefined &&
+        ballMax !== undefined &&
+        bonusballMax !== undefined,
+      refetchInterval: 30_000,
+    },
+  });
+
   return {
     drawingId: id.data,
     drawingTime: state.data?.drawingTime,
+    prizePool,
+    topPrize: tiers.data ? (tiers.data[11] as bigint) : undefined,
     raw: state.data,
   };
 }
@@ -91,7 +126,8 @@ export function useClaimable(user?: Address) {
 
 // User's per-ticket history — derived from SharesBought logs filtered by buyer.
 // (No on-chain "tickets I've ever bought into" enumeration; this is the canonical
-// off-chain replay path.)
+// off-chain replay path.) Backed by react-query so it gets refreshed by the same
+// queryClient.invalidateQueries() call that refreshes wagmi reads on tx success.
 export type Position = {
   ticketId: bigint;
   shares: number; // sum of buyer's share count across all SharesBought events
@@ -99,67 +135,44 @@ export type Position = {
 
 export function useUserPositions(user?: Address) {
   const publicClient = usePublicClient({ chainId: base.id });
-  const chainId = useChainId();
-  const [positions, setPositions] = useState<Position[] | undefined>();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | undefined>();
-  const [nonce, setNonce] = useState(0);
-
-  // Poll every 15s; re-fetch on user/chain change.
-  useEffect(() => {
-    if (!user || !publicClient) {
-      setPositions(undefined);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError(undefined);
-    (async () => {
-      try {
-        const logs = await publicClient.getLogs({
-          address: PENNYPOT_ADDRESS,
-          event: {
-            type: "event",
-            name: "SharesBought",
-            inputs: [
-              { name: "ticketId", type: "uint256", indexed: true },
-              { name: "buyer", type: "address", indexed: true },
-              { name: "count", type: "uint8", indexed: false },
-              { name: "newSold", type: "uint8", indexed: false },
-            ],
-          },
-          args: { buyer: user },
-          fromBlock: PENNYPOT_DEPLOY_BLOCK,
-          toBlock: "latest",
-        });
-        if (cancelled) return;
-        const byTicket = new Map<bigint, number>();
-        for (const l of logs) {
-          const tid = l.args.ticketId as bigint;
-          const cnt = Number(l.args.count as number);
-          byTicket.set(tid, (byTicket.get(tid) ?? 0) + cnt);
-        }
-        const out: Position[] = Array.from(byTicket.entries())
-          .map(([ticketId, shares]) => ({ ticketId, shares }))
-          .sort((a, b) => (a.ticketId < b.ticketId ? 1 : -1)); // newest first
-        setPositions(out);
-      } catch (e) {
-        if (!cancelled) setError((e as Error).message);
-      } finally {
-        if (!cancelled) setLoading(false);
+  const q = useQuery({
+    queryKey: ["userPositions", user, base.id, PENNYPOT_ADDRESS],
+    enabled: !!user && !!publicClient,
+    refetchInterval: 15_000,
+    queryFn: async (): Promise<Position[]> => {
+      if (!user || !publicClient) return [];
+      const logs = await publicClient.getLogs({
+        address: PENNYPOT_ADDRESS,
+        event: {
+          type: "event",
+          name: "SharesBought",
+          inputs: [
+            { name: "ticketId", type: "uint256", indexed: true },
+            { name: "buyer", type: "address", indexed: true },
+            { name: "count", type: "uint8", indexed: false },
+            { name: "newSold", type: "uint8", indexed: false },
+          ],
+        },
+        args: { buyer: user },
+        fromBlock: PENNYPOT_DEPLOY_BLOCK,
+        toBlock: "latest",
+      });
+      const byTicket = new Map<bigint, number>();
+      for (const l of logs) {
+        const tid = l.args.ticketId as bigint;
+        const cnt = Number(l.args.count as number);
+        byTicket.set(tid, (byTicket.get(tid) ?? 0) + cnt);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user, publicClient, chainId, nonce]);
-
-  useEffect(() => {
-    const t = setInterval(() => setNonce((n) => n + 1), 15_000);
-    return () => clearInterval(t);
-  }, []);
-
-  return { positions, loading, error };
+      return Array.from(byTicket.entries())
+        .map(([ticketId, shares]) => ({ ticketId, shares }))
+        .sort((a, b) => (a.ticketId < b.ticketId ? 1 : -1)); // newest first
+    },
+  });
+  return {
+    positions: q.data,
+    loading: q.isLoading,
+    error: q.error ? (q.error as Error).message : undefined,
+  };
 }
 
 // Per-ticket detail: (shares, holders, winningsPerShare, claimed).

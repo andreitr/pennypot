@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectKitProvider } from "connectkit";
+import { Toaster } from "sonner";
 import { WagmiProvider } from "wagmi";
 import { wagmiConfig } from "@/lib/wagmi";
 
@@ -33,6 +34,25 @@ export default function ClientProviders({
           }}
         >
           {children}
+          <Toaster
+            theme="dark"
+            position="bottom-right"
+            richColors
+            closeButton
+            toastOptions={{
+              style: {
+                background: "#101010",
+                border: "1px solid #262626",
+                color: "#e5e5e5",
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                fontSize: "12px",
+              },
+              classNames: {
+                success: "!border-accent/60",
+              },
+            }}
+          />
         </ConnectKitProvider>
       </QueryClientProvider>
     </WagmiProvider>

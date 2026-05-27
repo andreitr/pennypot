@@ -15,6 +15,7 @@ build/
 .next/
 .turbo/
 coverage/
+tsconfig.tsbuildinfo
 
 # Env & secrets
 .env

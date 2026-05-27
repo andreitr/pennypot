@@ -240,6 +240,24 @@ export const erc20Abi = [
   },
 ] as const;
 
+// Megapot PayoutCalculator (GuaranteedMinimumPayoutCalculator on Base mainnet) —
+// computes per-tier per-ticket payouts. Index 11 is the jackpot tier (5 normals
+// + bonusball).
+export const payoutCalculatorAbi = [
+  {
+    type: "function",
+    name: "getExpectedDrawingTierPayouts",
+    stateMutability: "view",
+    inputs: [
+      { name: "_drawingId", type: "uint256" },
+      { name: "_prizePool", type: "uint256" },
+      { name: "_normalMax", type: "uint8" },
+      { name: "_bonusballMax", type: "uint8" },
+    ],
+    outputs: [{ name: "drawingTierPayouts", type: "uint256[12]" }],
+  },
+] as const;
+
 // Minimal Megapot Jackpot surface — we need currentDrawingId + getDrawingState for
 // the hero countdown (covers the rollover edge case where the active ticket's
 // drawing has closed but Megapot has advanced).

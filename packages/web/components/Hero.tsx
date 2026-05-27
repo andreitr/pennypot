@@ -14,7 +14,7 @@ import {
 
 export function Hero() {
   const { data, isLoading } = useGetState();
-  const { drawingTime: megapotDeadline } = useMegapotDrawingTime();
+  const { drawingTime: megapotDeadline, topPrize } = useMegapotDrawingTime();
   const now = useNow();
 
   const drawingId = data?.[0];
@@ -64,18 +64,25 @@ export function Hero() {
         : "no live ticket";
 
   return (
-    <section className="relative z-10 mx-auto w-full max-w-3xl px-4 pt-10 pb-8 sm:pt-14">
-      <h1 className="text-center font-mono text-4xl font-black tracking-tighter sm:text-6xl">
-        <span className="text-accent drop-shadow-[0_0_18px_rgba(255,45,136,0.6)]">
-          PENNY
-        </span>
-        <span className="text-ink-100">POT</span>
-      </h1>
-      <p className="mt-2 text-center text-sm text-ink-300 sm:text-base">
-        1¢ shares of Megapot tickets · pooled · undersubscription-amplified
-      </p>
+    <section className="relative z-10 mx-auto w-full max-w-3xl px-4 py-16 sm:py-24">
+      {/* Top prize tier — Megapot PayoutCalculator.getExpectedDrawingTierPayouts[11]
+          (5 normals + bonusball, i.e. the jackpot tier per-ticket payout). */}
+      <div className="text-center">
+        <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-ink-300">
+          Megapot Jackpot
+        </div>
+        <div className="mt-1 font-mono text-5xl font-black tracking-tighter text-accent drop-shadow-[0_0_22px_rgba(255,45,136,0.55)] sm:text-7xl">
+          {topPrize !== undefined ? formatUsdc(topPrize, { dp: 0 }) : "—"}
+        </div>
+        <p className="mt-3 text-sm text-ink-300 sm:text-base">
+          Grab 1¢ shares of a Megapot ticket and ride it to the drawing.
+        </p>
+        <p className="mt-1 text-sm text-ink-300 sm:text-base">
+          Every unsold share grows your cut of the jackpot if it hits.
+        </p>
+      </div>
 
-      <div className="mt-8 rounded-2xl border border-ink-500 bg-ink-700/60 p-5 shadow-glow sm:p-7">
+      <div className="mt-16 rounded-2xl border border-ink-500 bg-ink-700/60 p-5 shadow-glow sm:mt-24 sm:p-7">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <div className="text-xs uppercase tracking-widest text-ink-300">
             Drawing #{drawingId?.toString() ?? "—"}

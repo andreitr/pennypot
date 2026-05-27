@@ -33,7 +33,9 @@ The only **required** env var for the full wallet set is a free
    and output (`/.next`) are correct.
 4. Set environment variables (Production + Preview):
    - `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` (required for WC-based mobile wallets)
-   - `NEXT_PUBLIC_BASE_RPC_URL` (recommended — public RPC will rate-limit a real frontend)
+   - `NEXT_PUBLIC_ALCHEMY_API_KEY` (recommended — routes all frontend RPC through
+     `https://base-mainnet.g.alchemy.com/v2/<key>`; the public RPC will rate-limit)
+   - `NEXT_PUBLIC_BASE_RPC_URL` (optional — full URL override for non-Alchemy providers)
    - `NEXT_PUBLIC_PENNYPOT_DEPLOY_BLOCK` (optional — set to PennyPot's exact creation
      block for faster log queries on the "My positions" section)
 5. Deploy. That's the whole flow — no extra Vercel config needed.

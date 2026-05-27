@@ -3,23 +3,38 @@
 import { ConnectKitButton } from "connectkit";
 import { Buy } from "@/components/Buy";
 import { Hero } from "@/components/Hero";
+import { NetworkBanner } from "@/components/NetworkBanner";
 import { Positions } from "@/components/Positions";
 
 export default function Page() {
   return (
     <main className="relative z-10">
       <header className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 pt-4">
-        <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-ink-300">
-          PennyPot · Base
-        </div>
+        {/* Brand mark — fills the header band */}
+        <a
+          href="/"
+          aria-label="PennyPot — home"
+          className="flex items-center font-mono text-4xl font-black leading-none tracking-tighter sm:text-5xl"
+        >
+          <span className="text-accent drop-shadow-[0_0_14px_rgba(255,45,136,0.6)]">
+            PENNY
+          </span>
+          <span className="text-ink-100">POT</span>
+        </a>
         <ConnectKitButton showBalance={false} />
       </header>
+
+      <NetworkBanner />
 
       <Hero />
       <Buy />
       <Positions />
 
       <footer className="mx-auto w-full max-w-3xl px-4 pb-12 pt-4 text-center font-mono text-[10px] uppercase tracking-[0.25em] text-ink-300">
+        <a href="/tickets" className="hover:text-accent">
+          all tickets →
+        </a>
+        <span className="mx-2">·</span>
         <a
           href="https://basescan.org/address/0xdCc075040Cf5888dBa26E9871427949BAb7591ba"
           target="_blank"

@@ -1,28 +1,41 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useAccount, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import {
+  useAccount,
+  useChainId,
+  usePublicClient,
+  useWriteContract,
+} from "wagmi";
+import { base } from "wagmi/chains";
 import { erc20Abi, pennypotAbi } from "@/lib/abis";
 import { PENNYPOT_ADDRESS, USDC_ADDRESS } from "@/lib/addresses";
 import { formatUsdc } from "@/lib/format";
 import { CONSTS, useGetState, useUsdc } from "@/lib/hooks";
 
+type Step = "idle" | "approving" | "buying" | "done";
+
 export function Buy() {
   const { address } = useAccount();
+  const chainId = useChainId();
+  const wrongChain = !!address && chainId !== base.id;
+  const queryClient = useQueryClient();
+  const publicClient = usePublicClient({ chainId: base.id });
   const { data: state } = useGetState();
   const usdc = useUsdc(address);
   const [count, setCount] = useState(10);
-  const [pendingHash, setPendingHash] = useState<`0x${string}` | undefined>();
+  const [step, setStep] = useState<Step>("idle");
+  const [errMsg, setErrMsg] = useState<string | undefined>();
 
   const ticketId = state?.[1];
   const sold = state?.[2] ?? 0;
-  const canBuy = state?.[4] ?? false; // canBuyNextTicket — true means "active is closed"; we want the opposite for buying SHARES
+  const canBuy = state?.[4] ?? false;
   const paused = state?.[6] ?? false;
 
-  // The shares-buying window: an active ticket exists, isn't full, deadline not passed.
-  // We approximate by: ticketId != 0, sold < 100, and canBuyNextTicket == false
-  // (since canBuyNextTicket flips true precisely when buyTicket() can roll, i.e.
-  // the active ticket is "closed").
+  // Selling-shares window: active ticket exists, not full, deadline not passed.
+  // We use !canBuyNextTicket as a proxy for "deadline not passed AND not full".
   const sellingActive =
     !paused && ticketId !== undefined && ticketId > 0n && sold < 100 && !canBuy;
 
@@ -37,21 +50,7 @@ export function Buy() {
   const insufficientBalance =
     usdcBalance !== undefined && usdcBalance < costUsdc;
 
-  const { writeContract, isPending, error: writeError } = useWriteContract({
-    mutation: {
-      onSuccess: (hash) => setPendingHash(hash),
-    },
-  });
-
-  const waiting = useWaitForTransactionReceipt({ hash: pendingHash });
-  useEffect(() => {
-    if (waiting.isSuccess) {
-      // Refresh allowance + balance after a successful tx
-      usdc.refetch();
-      setPendingHash(undefined);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waiting.isSuccess]);
+  const { writeContractAsync } = useWriteContract();
 
   // EV-amplification hook: with `count` more shares sold, the buyer's slice is
   // count / (sold + count). Show it as a percentage.
@@ -62,24 +61,122 @@ export function Buy() {
     return `${cappedCount}/${denom} = ${pct.toFixed(1)}%`;
   }, [cappedCount, sold]);
 
-  function doApprove() {
-    writeContract({
-      address: USDC_ADDRESS,
-      abi: erc20Abi,
-      functionName: "approve",
-      args: [PENNYPOT_ADDRESS, costUsdc],
-    });
+  const inFlight = step === "approving" || step === "buying";
+  const totalSteps = needsApprove ? 2 : 1;
+  const currentStep =
+    step === "approving" ? 1 : step === "buying" ? (needsApprove ? 2 : 1) : 0;
+
+  // One-click flow: if allowance < cost, fire approve, wait, then fire buy.
+  // Otherwise just fire buy. Each step waits for on-chain confirmation before
+  // moving on; UI shows "Step 1/2 — approving" → "Step 2/2 — buying" → done.
+  // A single sonner toast morphs through the steps so the user can follow along
+  // even if they're scrolled away from the button.
+  async function handleBuy() {
+    if (!ticketId || cappedCount === 0 || !publicClient) return;
+    setErrMsg(undefined);
+    const toastId = toast.loading(
+      needsApprove
+        ? `Approving USDC ${formatUsdc(costUsdc)}… (confirm in wallet)`
+        : `Buying ${cappedCount} share${cappedCount === 1 ? "" : "s"}… (confirm in wallet)`,
+    );
+    try {
+      if (needsApprove) {
+        setStep("approving");
+        const hash = await writeContractAsync({
+          address: USDC_ADDRESS,
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [PENNYPOT_ADDRESS, costUsdc],
+        });
+        toast.loading(`Waiting for USDC approval to confirm on-chain…`, {
+          id: toastId,
+        });
+        await publicClient.waitForTransactionReceipt({ hash });
+        toast.loading(
+          `Buying ${cappedCount} share${cappedCount === 1 ? "" : "s"}… (confirm in wallet)`,
+          { id: toastId },
+        );
+      }
+      setStep("buying");
+      const buyHash = await writeContractAsync({
+        address: PENNYPOT_ADDRESS,
+        abi: pennypotAbi,
+        functionName: "buyTicketShares",
+        args: [ticketId, cappedCount],
+      });
+      toast.loading(`Waiting for purchase to confirm on-chain…`, {
+        id: toastId,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: buyHash,
+      });
+
+      // The receipt returns as soon as ONE RPC sees the tx, but subsequent
+      // reads can hit a load-balanced node a block or two behind — making the
+      // Hero appear "stuck" for ~15s until the next refetchInterval. Poll
+      // getState directly until the new sold count (or a ticket roll-over)
+      // is observable, then invalidate. Bounded to ~6s.
+      const targetSold = sold + cappedCount;
+      for (let i = 0; i < 12; i++) {
+        try {
+          const s = (await publicClient.readContract({
+            address: PENNYPOT_ADDRESS,
+            abi: pennypotAbi,
+            functionName: "getState",
+            blockNumber: receipt.blockNumber,
+          })) as readonly [
+            bigint,
+            bigint,
+            number,
+            bigint,
+            boolean,
+            bigint,
+            boolean,
+          ];
+          if (s[2] >= targetSold || s[1] !== ticketId) break;
+        } catch {
+          // RPC doesn't have that block yet — wait and retry.
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      // Now refresh every wagmi read so Hero, balance, allowance, claimable,
+      // and positions all update — and fire the success toast simultaneously.
+      queryClient.invalidateQueries();
+      toast.success(
+        `Bought ${cappedCount} share${cappedCount === 1 ? "" : "s"} for ${formatUsdc(costUsdc)}`,
+        {
+          id: toastId,
+          description: `Ticket purchase confirmed on Base.`,
+          duration: 6000,
+        },
+      );
+      setStep("done");
+      setTimeout(() => setStep("idle"), 1800);
+    } catch (e) {
+      const msg = (e as Error).message.split("\n")[0];
+      const userRejected = /reject|denied|user/i.test(msg);
+      toast.error(userRejected ? "Wallet rejected the request" : "Purchase failed", {
+        id: toastId,
+        description: userRejected ? undefined : msg.slice(0, 180),
+      });
+      setStep("idle");
+      setErrMsg(msg);
+    }
   }
 
-  function doBuy() {
-    if (!ticketId) return;
-    writeContract({
-      address: PENNYPOT_ADDRESS,
-      abi: pennypotAbi,
-      functionName: "buyTicketShares",
-      args: [ticketId, cappedCount],
-    });
-  }
+  const buttonLabel =
+    step === "approving"
+      ? `Step 1/2 — approving USDC ${formatUsdc(costUsdc)}…`
+      : step === "buying"
+        ? needsApprove
+          ? `Step 2/2 — buying ${cappedCount} share${cappedCount === 1 ? "" : "s"}…`
+          : `buying ${cappedCount} share${cappedCount === 1 ? "" : "s"}…`
+        : step === "done"
+          ? "✓ Confirmed"
+          : needsApprove
+            ? `Approve & Buy ${cappedCount} share${cappedCount === 1 ? "" : "s"} · ${formatUsdc(costUsdc)}`
+            : `Buy ${cappedCount} share${cappedCount === 1 ? "" : "s"} · ${formatUsdc(costUsdc)}`;
 
   return (
     <section className="relative z-10 mx-auto w-full max-w-3xl px-4 py-6">
@@ -88,89 +185,30 @@ export function Buy() {
       <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-5 sm:p-7">
         {!address ? (
           <p className="text-ink-200">Connect a wallet to buy.</p>
+        ) : wrongChain ? (
+          <p className="text-accent">
+            Wallet is on the wrong network — switch to Base above to buy.
+          </p>
         ) : paused ? (
           <p className="text-accent">Contract is paused.</p>
         ) : !sellingActive ? (
           <p className="text-ink-200">
             {ticketId && ticketId > 0n && sold >= 100
-              ? "Active ticket is full. Crank the next ticket below to keep buying."
+              ? "Active ticket is full. Waiting for the next ticket to be cranked."
               : ticketId === 0n
-                ? "No active ticket yet. Crank the first ticket below."
+                ? "No active ticket yet. Waiting for the first ticket of this drawing."
                 : "Selling is paused for this drawing window. Check back after the next ticket is fronted."}
           </p>
         ) : (
           <>
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <label className="text-[10px] uppercase tracking-widest text-ink-300">
-                  Shares to buy (1¢ each, max {remaining})
-                </label>
-                <div className="mt-2 flex items-center gap-2">
-                  <button
-                    type="button"
-                    aria-label="-10"
-                    onClick={() => setCount((c) => Math.max(1, c - 10))}
-                    className="rounded-md border border-ink-500 px-2 py-1 font-mono hover:border-accent"
-                  >
-                    −10
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="-1"
-                    onClick={() => setCount((c) => Math.max(1, c - 1))}
-                    className="rounded-md border border-ink-500 px-2 py-1 font-mono hover:border-accent"
-                  >
-                    −1
-                  </button>
-                  <input
-                    type="number"
-                    min={1}
-                    max={remaining}
-                    value={count}
-                    onChange={(e) =>
-                      setCount(
-                        Math.max(1, Math.min(remaining, Number(e.target.value) || 1)),
-                      )
-                    }
-                    className="w-24 rounded-md border border-ink-500 bg-ink-800 px-3 py-2 text-center font-mono text-lg outline-none focus:border-accent"
-                  />
-                  <button
-                    type="button"
-                    aria-label="+1"
-                    onClick={() => setCount((c) => Math.min(remaining, c + 1))}
-                    className="rounded-md border border-ink-500 px-2 py-1 font-mono hover:border-accent"
-                  >
-                    +1
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="+10"
-                    onClick={() => setCount((c) => Math.min(remaining, c + 10))}
-                    className="rounded-md border border-ink-500 px-2 py-1 font-mono hover:border-accent"
-                  >
-                    +10
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCount(remaining)}
-                    className="ml-1 rounded-md border border-accent/40 px-2 py-1 font-mono text-accent hover:border-accent"
-                  >
-                    max
-                  </button>
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-[10px] uppercase tracking-widest text-ink-300">
-                  cost
-                </div>
-                <div className="font-mono text-2xl font-bold text-accent">
-                  {formatUsdc(costUsdc, { dp: 2 })}
-                </div>
-                <div className="font-mono text-[11px] text-ink-300">
-                  USDC balance: {formatUsdc(usdcBalance)}
-                </div>
-              </div>
-            </div>
+            <SharesSlider
+              count={count}
+              max={remaining}
+              cost={costUsdc}
+              disabled={inFlight}
+              onChange={setCount}
+            />
+
 
             {/* EV / undersubscription hook */}
             <div className="mt-5 rounded-lg border border-ink-500 bg-ink-800/70 p-3 font-mono text-sm">
@@ -188,48 +226,55 @@ export function Buy() {
               )}
             </div>
 
-            {/* CTA */}
-            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center">
-              {needsApprove ? (
-                <button
-                  type="button"
-                  onClick={doApprove}
-                  disabled={isPending || waiting.isLoading || cappedCount === 0}
-                  className="w-full rounded-xl bg-accent px-4 py-3 font-mono text-base font-bold text-ink-900 transition disabled:opacity-50 hover:shadow-glow sm:w-auto"
-                >
-                  {isPending || waiting.isLoading
-                    ? "approving…"
-                    : `Approve USDC ${formatUsdc(costUsdc)}`}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={doBuy}
-                  disabled={
-                    isPending ||
-                    waiting.isLoading ||
-                    cappedCount === 0 ||
-                    insufficientBalance
-                  }
-                  className="w-full rounded-xl bg-accent px-4 py-3 font-mono text-base font-bold text-ink-900 transition disabled:opacity-50 hover:shadow-glow sm:w-auto"
-                >
-                  {isPending || waiting.isLoading
-                    ? "buying…"
-                    : `Buy ${cappedCount} share${cappedCount === 1 ? "" : "s"} · ${formatUsdc(costUsdc)}`}
-                </button>
-              )}
+            {/* CTA — single button orchestrates approve + buy when allowance is short */}
+            <div className="mt-5">
+              <button
+                type="button"
+                onClick={handleBuy}
+                disabled={inFlight || cappedCount === 0 || insufficientBalance}
+                className="w-full rounded-xl bg-accent px-4 py-3 font-mono text-base font-bold text-ink-900 transition disabled:opacity-50 hover:shadow-glow sm:w-auto"
+              >
+                {buttonLabel}
+              </button>
+
+              {/* Two-step progress while a buy is in flight */}
+              {inFlight ? (
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="h-1 flex-1 overflow-hidden rounded-full bg-ink-600">
+                    <div
+                      className="h-full bg-accent transition-[width] duration-500 ease-out"
+                      style={{
+                        width:
+                          step === "approving"
+                            ? "45%"
+                            : step === "buying"
+                              ? "100%"
+                              : "0%",
+                      }}
+                    />
+                  </div>
+                  <div className="shrink-0 font-mono text-[11px] uppercase tracking-widest text-ink-300">
+                    confirmation {currentStep}/{totalSteps}
+                  </div>
+                </div>
+              ) : null}
+
               {insufficientBalance ? (
-                <span className="text-sm text-accent">Not enough USDC.</span>
+                <div className="mt-2 text-sm text-accent">Not enough USDC.</div>
+              ) : null}
+
+              {needsApprove && !inFlight && step !== "done" ? (
+                <div className="mt-2 font-mono text-[11px] text-ink-300">
+                  Two wallet confirmations: 1/ approve USDC, 2/ buy shares.
+                </div>
               ) : null}
             </div>
 
-            {writeError ? (
-              <div className="mt-2 break-all text-xs text-accent">
-                {writeError.message.split("\n")[0]}
-              </div>
+            {errMsg ? (
+              <div className="mt-2 break-all text-xs text-accent">{errMsg}</div>
             ) : null}
-            {waiting.isSuccess ? (
-              <div className="mt-2 text-xs text-accent">Confirmed ✓</div>
+            {step === "done" ? (
+              <div className="mt-2 text-xs text-accent">Confirmed on-chain ✓</div>
             ) : null}
           </>
         )}
@@ -243,5 +288,73 @@ function SectionHeader({ title }: { title: string }) {
     <h2 className="mb-3 px-1 font-mono text-xs uppercase tracking-[0.25em] text-ink-300">
       ▌ {title}
     </h2>
+  );
+}
+
+function SharesSlider({
+  count,
+  max,
+  cost,
+  disabled,
+  onChange,
+}: {
+  count: number;
+  max: number;
+  cost: bigint;
+  disabled?: boolean;
+  onChange: (n: number) => void;
+}) {
+  const safeMax = Math.max(1, max);
+  const safeCount = Math.min(Math.max(1, count), safeMax);
+  // Filled portion of the track, 0..100%
+  const pct = safeMax > 1 ? ((safeCount - 1) / (safeMax - 1)) * 100 : 100;
+
+  return (
+    <div>
+      {/* Big readout: current share count + cost — same baseline, same treatment */}
+      <div className="flex items-baseline justify-between gap-3 font-mono">
+        <div>
+          <span className="text-4xl font-bold text-accent">{safeCount}</span>{" "}
+          <span className="text-sm text-ink-300">
+            share{safeCount === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="text-right">
+          <span className="text-4xl font-bold text-accent">
+            {formatUsdc(cost, { dp: 2 })}
+          </span>{" "}
+          <span className="text-sm text-ink-300">cost</span>
+        </div>
+      </div>
+
+      {/* Slider */}
+      <input
+        type="range"
+        min={1}
+        max={safeMax}
+        step={1}
+        value={safeCount}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-label="Shares to buy"
+        // Pink fill up to the thumb, dark beyond.
+        style={{
+          background: `linear-gradient(to right, #ff2d88 0%, #ff2d88 ${pct}%, #262626 ${pct}%, #262626 100%)`,
+        }}
+        className="
+          mt-4 h-2 w-full cursor-pointer appearance-none rounded-full outline-none
+          disabled:cursor-not-allowed disabled:opacity-50
+          [&::-webkit-slider-runnable-track]:appearance-none [&::-webkit-slider-runnable-track]:bg-transparent
+          [&::-webkit-slider-thumb]:-mt-1.5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:w-5
+          [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:cursor-pointer
+          [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent
+          [&::-webkit-slider-thumb]:shadow-glow [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-ink-900
+          [&::-moz-range-track]:appearance-none [&::-moz-range-track]:bg-transparent
+          [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:cursor-pointer
+          [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-accent
+          [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-ink-900
+        "
+      />
+    </div>
   );
 }
