@@ -2,6 +2,7 @@
 
 import { ConnectKitButton } from "connectkit";
 import { Buy } from "@/components/Buy";
+import { CurrentRound } from "@/components/CurrentRound";
 import { Hero } from "@/components/Hero";
 import { NetworkBanner } from "@/components/NetworkBanner";
 import { Positions } from "@/components/Positions";
@@ -27,6 +28,7 @@ export default function Page() {
       <NetworkBanner />
 
       <Hero />
+      <CurrentRound />
       <Buy />
       <Positions />
 

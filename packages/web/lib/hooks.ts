@@ -187,35 +187,45 @@ export function useTicket(ticketId?: bigint) {
   });
 }
 
-// Lottery picks (5 normals + bonusball) for a given Megapot ticket id, fetched
-// via our server-side Data API proxy. The active ticket is always the newest
-// purchase, so a single page comfortably contains it. Returns null until found.
+// All Megapot tickets bought by the PennyPot contract (newest first), fetched
+// once from our server-side Data API proxy and shared across the app via a
+// stable react-query key. The picks (lottery numbers) are NOT available from
+// the PennyPot contract — they live in Megapot's TicketPurchased event — so the
+// Data API is the right (and only) source for them. Fill/holder counts come
+// from on-chain getTicket instead, since the Data API doesn't know PennyPot's
+// share accounting.
 export type TicketPicks = { normals: number[]; bonusball: number };
 
-export function useTicketPicks(ticketId?: bigint) {
+export type ContractTicket = {
+  user_ticket_id: string;
+  normals: number[];
+  bonusball: number;
+  round_id: string;
+  tx_hash: string;
+};
+
+export function useMegapotContractTickets() {
   return useQuery({
-    queryKey: ["ticketPicks", ticketId?.toString()],
-    enabled: ticketId !== undefined && ticketId > 0n,
+    queryKey: ["megapotContractTickets", PENNYPOT_ADDRESS],
     refetchInterval: 60_000,
-    queryFn: async (): Promise<TicketPicks | null> => {
-      if (ticketId === undefined || ticketId === 0n) return null;
-      const res = await fetch("/api/megapot/tickets?limit=50");
-      if (!res.ok) return null;
-      const json = (await res.json()) as {
-        data: Array<{
-          user_ticket_id: string;
-          normals: number[];
-          bonusball: number;
-        }>;
-      };
-      const match = json.data?.find(
-        (t) => t.user_ticket_id === ticketId.toString(),
-      );
-      return match
-        ? { normals: match.normals, bonusball: match.bonusball }
-        : null;
+    queryFn: async (): Promise<ContractTicket[]> => {
+      const res = await fetch("/api/megapot/tickets?limit=100");
+      if (!res.ok) return [];
+      const json = (await res.json()) as { data?: ContractTicket[] };
+      return json.data ?? [];
     },
   });
+}
+
+// Lottery picks for a single ticket id, derived from the shared list above.
+export function useTicketPicks(ticketId?: bigint) {
+  const q = useMegapotContractTickets();
+  const data = useMemo<TicketPicks | null>(() => {
+    if (ticketId === undefined || ticketId === 0n || !q.data) return null;
+    const m = q.data.find((t) => t.user_ticket_id === ticketId.toString());
+    return m ? { normals: m.normals, bonusball: m.bonusball } : null;
+  }, [ticketId, q.data]);
+  return { data, isLoading: q.isLoading };
 }
 
 // Tickets in a drawing — used by the Cranks section to assemble claimWinnings args.

@@ -15,7 +15,7 @@ import {
 } from "@/lib/hooks";
 
 export function Hero() {
-  const { data, isLoading } = useGetState();
+  const { data } = useGetState();
   const { drawingTime: megapotDeadline, topPrize } = useMegapotDrawingTime();
   const now = useNow();
 
@@ -93,51 +93,69 @@ export function Hero() {
       </div>
 
       <div className="mt-16 rounded-2xl border border-ink-500 bg-ink-700/60 p-5 shadow-glow sm:mt-24 sm:p-7">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <div className="text-xs uppercase tracking-widest text-ink-300">
-            Drawing #{drawingId?.toString() ?? "—"}
+        {paused ? (
+          <div className="text-lg font-medium text-accent sm:text-xl">
+            Paused
           </div>
-          <div
-            className={`font-mono text-xs sm:text-sm ${
-              cd.ended ? "text-ink-300" : "text-accent"
-            }`}
-            aria-live="polite"
-          >
-            {cd.label}
-          </div>
-        </div>
+        ) : isSelling ? (
+          <>
+            {picks.data ? (
+              <TicketPicks
+                normals={picks.data.normals}
+                bonusball={picks.data.bonusball}
+              />
+            ) : (
+              <div className="text-lg font-medium sm:text-xl">
+                {sellingState}
+              </div>
+            )}
 
-        {isSelling && picks.data ? (
-          <TicketPicks
-            normals={picks.data.normals}
-            bonusball={picks.data.bonusball}
-          />
+            <div className="mt-5 grid grid-cols-2 gap-4">
+              <Stat label="Shares sold" value={`${sold}/100`} mono pop={sold} />
+              <Stat
+                label="Holders"
+                value={holders.toString()}
+                mono
+                pop={holders}
+              />
+            </div>
+
+            {/* Progress bar for current ticket */}
+            <div className="mt-5">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-ink-600">
+                <div
+                  className="h-full bg-accent transition-[width] duration-500 ease-out"
+                  style={{ width: `${sold}%` }}
+                />
+              </div>
+            </div>
+          </>
         ) : (
-          <div className="mt-2 text-lg font-medium sm:text-xl">
-            {sellingState}
-          </div>
+          <WaitingForTicket />
         )}
-
-        <div className="mt-5 grid grid-cols-2 gap-4">
-          <Stat label="Shares sold" value={`${sold}/100`} mono pop={sold} />
-          <Stat label="Holders" value={holders.toString()} mono pop={holders} />
-        </div>
-
-        {/* Progress bar for current ticket */}
-        <div className="mt-5">
-          <div className="h-2 w-full overflow-hidden rounded-full bg-ink-600">
-            <div
-              className="h-full bg-accent transition-[width] duration-500 ease-out"
-              style={{ width: `${sold}%` }}
-            />
-          </div>
-        </div>
-
-        {isLoading ? (
-          <div className="mt-3 text-xs text-ink-300">loading state…</div>
-        ) : null}
       </div>
     </section>
+  );
+}
+
+function WaitingForTicket() {
+  return (
+    <div className="flex items-center gap-4">
+      <span
+        role="status"
+        aria-label="loading"
+        className="h-10 w-10 shrink-0 animate-spin rounded-full border-2 border-ink-500 border-t-accent shadow-glow"
+      />
+      <div className="min-w-0">
+        <div className="text-lg font-medium text-ink-100 sm:text-xl">
+          Lining up the next ticket
+        </div>
+        <div className="mt-1 text-sm text-ink-300">
+          A fresh Megapot ticket is being purchased — this updates
+          automatically.
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -150,7 +168,7 @@ function TicketPicks({
 }) {
   const pad = (n: number) => n.toString().padStart(2, "0");
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       {normals.map((n, i) => (
         <span
           key={`${i}-${n}`}
