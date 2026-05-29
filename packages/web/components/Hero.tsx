@@ -10,6 +10,8 @@ import {
   useGetState,
   useMegapotDrawingTime,
   useNow,
+  useTicket,
+  useTicketPicks,
 } from "@/lib/hooks";
 
 export function Hero() {
@@ -22,7 +24,6 @@ export function Hero() {
   const sold = data?.[2] ?? 0;
   const activeDeadline = data?.[3];
   const canBuy = data?.[4] ?? false;
-  const reserve = data?.[5];
   const paused = data?.[6] ?? false;
 
   // Use the active ticket's deadline when there's a live active ticket; otherwise
@@ -30,6 +31,16 @@ export function Hero() {
   const liveDeadline =
     activeDeadline && activeDeadline > 0n ? activeDeadline : megapotDeadline;
   const cd = countdown(liveDeadline, now);
+
+  // Lottery picks for the active ticket (shown as balls in the headline).
+  const picks = useTicketPicks(ticketId);
+  const isSelling =
+    !paused && !!ticketId && ticketId > 0n && !cd.ended && sold < 100;
+
+  // Per-ticket detail (shares, holders, winningsPerShare, claimed) — we surface
+  // the holder count as a stat.
+  const ticket = useTicket(ticketId);
+  const holders = (ticket.data?.[1] as number | undefined) ?? 0;
 
   // All ticket ids bought in this drawing — gives us per-drawing count AND the
   // 1-based position of the active ticket ("Ticket #3 of this drawing").
@@ -41,7 +52,6 @@ export function Hero() {
     args: drawingId !== undefined ? [drawingId] : undefined,
     query: { enabled: drawingId !== undefined, refetchInterval: 15_000 },
   });
-  const ticketCount = drawingTickets.data?.length ?? 0;
   const ticketNumber = useMemo(() => {
     if (!ticketId || !drawingTickets.data) return undefined;
     const idx = drawingTickets.data.findIndex((id) => id === ticketId);
@@ -97,13 +107,20 @@ export function Hero() {
           </div>
         </div>
 
-        <div className="mt-2 text-lg font-medium sm:text-xl">{sellingState}</div>
+        {isSelling && picks.data ? (
+          <TicketPicks
+            normals={picks.data.normals}
+            bonusball={picks.data.bonusball}
+          />
+        ) : (
+          <div className="mt-2 text-lg font-medium sm:text-xl">
+            {sellingState}
+          </div>
+        )}
 
-        <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Stat label="Ticket" value={ticketLabel} mono />
+        <div className="mt-5 grid grid-cols-2 gap-4">
           <Stat label="Shares sold" value={`${sold}/100`} mono pop={sold} />
-          <Stat label="Tickets this drawing" value={ticketCount.toString()} mono />
-          <Stat label="Reserve" value={formatUsdc(reserve)} mono accent />
+          <Stat label="Holders" value={holders.toString()} mono pop={holders} />
         </div>
 
         {/* Progress bar for current ticket */}
@@ -121,6 +138,35 @@ export function Hero() {
         ) : null}
       </div>
     </section>
+  );
+}
+
+function TicketPicks({
+  normals,
+  bonusball,
+}: {
+  normals: number[];
+  bonusball: number;
+}) {
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      {normals.map((n, i) => (
+        <span
+          key={`${i}-${n}`}
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-ink-500 bg-ink-800/70 font-mono text-base font-bold text-ink-100"
+        >
+          {pad(n)}
+        </span>
+      ))}
+      <span className="mx-1 text-ink-500">·</span>
+      <span
+        className="flex h-10 w-10 items-center justify-center rounded-full bg-accent font-mono text-base font-bold text-ink-900 shadow-glow"
+        title="Bonusball"
+      >
+        {pad(bonusball)}
+      </span>
+    </div>
   );
 }
 

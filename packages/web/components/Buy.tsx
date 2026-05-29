@@ -39,6 +39,16 @@ export function Buy() {
   const sellingActive =
     !paused && ticketId !== undefined && ticketId > 0n && sold < 100 && !canBuy;
 
+  // No sellable ticket right now, but the drawing is live and a keeper is about
+  // to front the next one: either there's no first ticket yet, the active ticket
+  // just sold out, or the contract reports the next ticket can be bought now.
+  // (Distinct from the "selling window closed" case, where nothing is imminent.)
+  const awaitingNextTicket =
+    !paused &&
+    (ticketId === 0n ||
+      (ticketId !== undefined && ticketId > 0n && sold >= 100) ||
+      canBuy);
+
   // Cap to remaining capacity.
   const remaining = Math.max(0, CONSTS.SHARES_PER_TICKET - sold);
   const cappedCount = Math.max(0, Math.min(count, remaining));
@@ -192,13 +202,27 @@ export function Buy() {
         ) : paused ? (
           <p className="text-accent">Contract is paused.</p>
         ) : !sellingActive ? (
-          <p className="text-ink-200">
-            {ticketId && ticketId > 0n && sold >= 100
-              ? "Active ticket is full. Waiting for the next ticket to be cranked."
-              : ticketId === 0n
-                ? "No active ticket yet. Waiting for the first ticket of this drawing."
-                : "Selling is paused for this drawing window. Check back after the next ticket is fronted."}
-          </p>
+          awaitingNextTicket ? (
+            <div className="flex items-center gap-4 py-1">
+              <Spinner />
+              <div className="min-w-0">
+                <div className="font-medium text-ink-100">
+                  {ticketId && ticketId > 0n && sold >= 100
+                    ? "This ticket just sold out."
+                    : "Lining up the next ticket."}
+                </div>
+                <div className="mt-1 text-sm text-ink-300">
+                  A fresh Megapot ticket is being purchased — shares open in a
+                  moment. This updates automatically.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-ink-200">
+              Selling is paused for this drawing window. Check back after the
+              next ticket is fronted.
+            </p>
+          )
         ) : (
           <>
             <SharesSlider
@@ -288,6 +312,16 @@ function SectionHeader({ title }: { title: string }) {
     <h2 className="mb-3 px-1 font-mono text-xs uppercase tracking-[0.25em] text-ink-300">
       ▌ {title}
     </h2>
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      role="status"
+      aria-label="loading"
+      className="h-9 w-9 shrink-0 animate-spin rounded-full border-2 border-ink-500 border-t-accent shadow-glow"
+    />
   );
 }
 

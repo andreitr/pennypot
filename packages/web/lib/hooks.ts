@@ -187,6 +187,37 @@ export function useTicket(ticketId?: bigint) {
   });
 }
 
+// Lottery picks (5 normals + bonusball) for a given Megapot ticket id, fetched
+// via our server-side Data API proxy. The active ticket is always the newest
+// purchase, so a single page comfortably contains it. Returns null until found.
+export type TicketPicks = { normals: number[]; bonusball: number };
+
+export function useTicketPicks(ticketId?: bigint) {
+  return useQuery({
+    queryKey: ["ticketPicks", ticketId?.toString()],
+    enabled: ticketId !== undefined && ticketId > 0n,
+    refetchInterval: 60_000,
+    queryFn: async (): Promise<TicketPicks | null> => {
+      if (ticketId === undefined || ticketId === 0n) return null;
+      const res = await fetch("/api/megapot/tickets?limit=50");
+      if (!res.ok) return null;
+      const json = (await res.json()) as {
+        data: Array<{
+          user_ticket_id: string;
+          normals: number[];
+          bonusball: number;
+        }>;
+      };
+      const match = json.data?.find(
+        (t) => t.user_ticket_id === ticketId.toString(),
+      );
+      return match
+        ? { normals: match.normals, bonusball: match.bonusball }
+        : null;
+    },
+  });
+}
+
 // Tickets in a drawing — used by the Cranks section to assemble claimWinnings args.
 export function useDrawingTicketIds(drawingId?: bigint) {
   return useReadContract({
