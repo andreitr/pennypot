@@ -1,5 +1,6 @@
 "use client";
 
+import NumberFlow from "@number-flow/react";
 import { useMemo } from "react";
 import { useReadContracts } from "wagmi";
 import { base } from "wagmi/chains";
@@ -9,6 +10,8 @@ import {
   useDrawingTicketIds,
   useGetState,
   useMegapotContractTickets,
+  useMegapotDrawingTime,
+  useNow,
 } from "@/lib/hooks";
 
 // Tickets PennyPot has bought in the current Megapot round. Hybrid data:
@@ -50,7 +53,6 @@ export function CurrentRound() {
         | undefined;
       return {
         id,
-        number: i + 1,
         sold: det?.[0] ?? 0,
         holders: det?.[1] ?? 0,
         picks: picksMap.get(id.toString()),
@@ -61,7 +63,12 @@ export function CurrentRound() {
 
   return (
     <section className="relative z-10 mx-auto w-full max-w-3xl px-4 py-6">
-      <SectionHeader title="Tickets in the current round" />
+      <div className="mb-3 flex items-center justify-between gap-3 px-1">
+        <h2 className="font-mono text-xs uppercase tracking-[0.25em] text-ink-300">
+          ▌ Tickets in the current round
+        </h2>
+        <DrawingCountdown />
+      </div>
 
       <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-2 sm:p-3">
         {idsQ.isLoading ? (
@@ -77,25 +84,22 @@ export function CurrentRound() {
                 key={r.id.toString()}
                 className="flex items-center justify-between gap-3 px-3 py-3 sm:px-4"
               >
-                <div className="min-w-0">
-                  <div className="flex items-baseline gap-2 font-mono text-sm">
-                    <span className="text-accent">ticket #{r.number}</span>
-                    {r.isActive ? (
-                      <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-accent">
-                        selling
-                      </span>
-                    ) : null}
-                  </div>
+                <div className="flex min-w-0 items-center gap-2">
                   {r.picks ? (
                     <Picks
                       normals={r.picks.normals}
                       bonusball={r.picks.bonusball}
                     />
                   ) : (
-                    <div className="mt-1.5 font-mono text-[11px] text-ink-300">
+                    <div className="font-mono text-[11px] text-ink-300">
                       picks loading…
                     </div>
                   )}
+                  {r.isActive ? (
+                    <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-accent">
+                      selling
+                    </span>
+                  ) : null}
                 </div>
                 <div className="shrink-0 text-right font-mono text-sm">
                   <div className="text-ink-100">{r.sold}/100</div>
@@ -121,7 +125,7 @@ function Picks({
 }) {
   const pad = (n: number) => n.toString().padStart(2, "0");
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5">
       {normals.map((n, i) => (
         <span
           key={`${i}-${n}`}
@@ -140,10 +144,29 @@ function Picks({
   );
 }
 
-function SectionHeader({ title }: { title: string }) {
+// "Drawing in HH:MM:SS" — time until the current Megapot round closes, with each
+// digit segment animated via @number-flow/react.
+function DrawingCountdown() {
+  const { drawingTime } = useMegapotDrawingTime();
+  const now = useNow();
+  if (drawingTime === undefined) return null;
+
+  const diff = Math.max(0, Number(drawingTime) - Math.floor(now / 1000));
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  const s = diff % 60;
+  const fmt = { minimumIntegerDigits: 2 } as const;
+
   return (
-    <h2 className="mb-3 px-1 font-mono text-xs uppercase tracking-[0.25em] text-ink-300">
-      ▌ {title}
-    </h2>
+    <div className="flex shrink-0 items-center gap-1.5 font-mono text-xs uppercase tracking-widest">
+      <span className="text-ink-300">Drawing in</span>
+      <span className="flex items-center tabular-nums text-accent">
+        <NumberFlow value={h} format={fmt} />
+        <span className="px-0.5">:</span>
+        <NumberFlow value={m} format={fmt} />
+        <span className="px-0.5">:</span>
+        <NumberFlow value={s} format={fmt} />
+      </span>
+    </div>
   );
 }

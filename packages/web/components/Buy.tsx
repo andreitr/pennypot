@@ -1,7 +1,8 @@
 "use client";
 
+import NumberFlow from "@number-flow/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   useAccount,
@@ -243,12 +244,23 @@ export function Buy() {
             ) : null}
 
             <div className="mt-5 grid grid-cols-2 gap-4">
-              <Stat label="Shares sold" value={`${sold}/100`} mono pop={sold} />
+              <Stat
+                label="Shares sold"
+                mono
+                value={
+                  <span className="tabular-nums">
+                    <NumberFlow value={sold} />/100
+                  </span>
+                }
+              />
               <Stat
                 label="Holders"
-                value={holders.toString()}
                 mono
-                pop={holders}
+                value={
+                  <span className="tabular-nums">
+                    <NumberFlow value={holders} />
+                  </span>
+                }
               />
             </div>
 
@@ -397,13 +409,11 @@ function Stat({
   value,
   mono,
   accent,
-  pop,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   mono?: boolean;
   accent?: boolean;
-  pop?: number | string;
 }) {
   return (
     <div>
@@ -411,13 +421,10 @@ function Stat({
         {label}
       </div>
       <div
-        // key forces re-mount so the pop animation re-runs on value change
-        key={pop !== undefined ? String(pop) : undefined}
         className={[
           "mt-1 text-lg sm:text-xl font-semibold",
           mono ? "font-mono" : "",
           accent ? "text-accent" : "text-ink-100",
-          pop !== undefined ? "num-pop" : "",
         ].join(" ")}
       >
         {value}
