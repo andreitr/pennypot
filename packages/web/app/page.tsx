@@ -28,8 +28,8 @@ export default function Page() {
       <NetworkBanner />
 
       <Hero />
-      <CurrentRound />
       <Buy />
+      <CurrentRound />
       <Positions />
 
       <footer className="mx-auto w-full max-w-3xl px-4 pb-12 pt-4 text-center font-mono text-[10px] uppercase tracking-[0.25em] text-ink-300">

@@ -13,7 +13,13 @@ import { base } from "wagmi/chains";
 import { erc20Abi, pennypotAbi } from "@/lib/abis";
 import { PENNYPOT_ADDRESS, USDC_ADDRESS } from "@/lib/addresses";
 import { formatUsdc } from "@/lib/format";
-import { CONSTS, useGetState, useUsdc } from "@/lib/hooks";
+import {
+  CONSTS,
+  useGetState,
+  useTicket,
+  useTicketPicks,
+  useUsdc,
+} from "@/lib/hooks";
 
 type Step = "idle" | "approving" | "buying" | "done";
 
@@ -33,6 +39,11 @@ export function Buy() {
   const sold = state?.[2] ?? 0;
   const canBuy = state?.[4] ?? false;
   const paused = state?.[6] ?? false;
+
+  // Active-ticket display: lottery picks (Data API) + holder count (on-chain).
+  const picks = useTicketPicks(ticketId);
+  const ticket = useTicket(ticketId);
+  const holders = (ticket.data?.[1] as number | undefined) ?? 0;
 
   // Selling-shares window: active ticket exists, not full, deadline not passed.
   // We use !canBuyNextTicket as a proxy for "deadline not passed AND not full".
@@ -197,117 +208,154 @@ export function Buy() {
             : `Buy ${cappedCount} share${cappedCount === 1 ? "" : "s"} · ${formatUsdc(costUsdc)}`;
 
   return (
-    <section className="relative z-10 mx-auto w-full max-w-3xl px-4 py-6">
-      <SectionHeader title="Buy shares" />
-
-      <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-5 sm:p-7">
-        {!address ? (
-          <p className="text-ink-200">Connect a wallet to buy.</p>
-        ) : wrongChain ? (
-          <p className="text-accent">
-            Wallet is on the wrong network — switch to Base above to buy.
-          </p>
-        ) : paused ? (
+    <section className="relative z-10 mx-auto w-full max-w-3xl px-4 pb-8">
+      <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-5 shadow-glow sm:p-7">
+        {paused ? (
           <p className="text-accent">Contract is paused.</p>
-        ) : !sellingActive ? (
-          awaitingNextTicket ? (
-            <div className="flex items-center gap-4 py-1">
-              <Spinner />
-              <div className="min-w-0">
-                <div className="font-medium text-ink-100">
-                  {ticketId && ticketId > 0n && sold >= 100
-                    ? "This ticket just sold out."
-                    : "Lining up the next ticket."}
-                </div>
-                <div className="mt-1 text-sm text-ink-300">
-                  A fresh Megapot ticket is being purchased — shares open in a
-                  moment. This updates automatically.
-                </div>
+        ) : awaitingNextTicket ? (
+          <div className="flex items-center gap-4">
+            <Spinner />
+            <div className="min-w-0">
+              <div className="text-lg font-medium text-ink-100 sm:text-xl">
+                {ticketId && ticketId > 0n && sold >= 100
+                  ? "This ticket just sold out."
+                  : "Lining up the next ticket"}
+              </div>
+              <div className="mt-1 text-sm text-ink-300">
+                A fresh Megapot ticket is being purchased — shares open in a
+                moment. This updates automatically.
               </div>
             </div>
-          ) : (
-            <p className="text-ink-200">
-              Selling is paused for this drawing window. Check back after the
-              next ticket is fronted.
-            </p>
-          )
+          </div>
+        ) : !sellingActive ? (
+          <p className="text-ink-200">
+            Selling is paused for this drawing window. Check back after the next
+            ticket is fronted.
+          </p>
         ) : (
           <>
-            <SharesSlider
-              count={count}
-              max={remaining}
-              cost={costUsdc}
-              disabled={inFlight}
-              onChange={setCount}
-            />
+            {/* Active ticket — picks, fill, holders */}
+            {picks.data ? (
+              <TicketPicks
+                normals={picks.data.normals}
+                bonusball={picks.data.bonusball}
+              />
+            ) : null}
 
-
-            {/* EV / undersubscription hook */}
-            <div className="mt-5 rounded-lg border border-ink-500 bg-ink-800/70 p-3 font-mono text-sm">
-              {sliceLabel ? (
-                <>
-                  <span className="text-ink-300">if ticket wins, your slice =</span>{" "}
-                  <span className="text-accent">{sliceLabel}</span>{" "}
-                  <span className="text-ink-300">of the prize</span>
-                  <div className="mt-1 text-[11px] text-ink-300">
-                    (current ticket {sold}/100 sold — undersubscription amplifies your payout per share)
-                  </div>
-                </>
-              ) : (
-                <span className="text-ink-300">enter a count above</span>
-              )}
+            <div className="mt-5 grid grid-cols-2 gap-4">
+              <Stat label="Shares sold" value={`${sold}/100`} mono pop={sold} />
+              <Stat
+                label="Holders"
+                value={holders.toString()}
+                mono
+                pop={holders}
+              />
             </div>
 
-            {/* CTA — single button orchestrates approve + buy when allowance is short */}
             <div className="mt-5">
-              <button
-                type="button"
-                onClick={handleBuy}
-                disabled={inFlight || cappedCount === 0 || insufficientBalance}
-                className="w-full rounded-xl bg-accent px-4 py-3 font-mono text-base font-bold text-ink-900 transition disabled:opacity-50 hover:shadow-glow sm:w-auto"
-              >
-                {buttonLabel}
-              </button>
-
-              {/* Two-step progress while a buy is in flight */}
-              {inFlight ? (
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="h-1 flex-1 overflow-hidden rounded-full bg-ink-600">
-                    <div
-                      className="h-full bg-accent transition-[width] duration-500 ease-out"
-                      style={{
-                        width:
-                          step === "approving"
-                            ? "45%"
-                            : step === "buying"
-                              ? "100%"
-                              : "0%",
-                      }}
-                    />
-                  </div>
-                  <div className="shrink-0 font-mono text-[11px] uppercase tracking-widest text-ink-300">
-                    confirmation {currentStep}/{totalSteps}
-                  </div>
-                </div>
-              ) : null}
-
-              {insufficientBalance ? (
-                <div className="mt-2 text-sm text-accent">Not enough USDC.</div>
-              ) : null}
-
-              {needsApprove && !inFlight && step !== "done" ? (
-                <div className="mt-2 font-mono text-[11px] text-ink-300">
-                  Two wallet confirmations: 1/ approve USDC, 2/ buy shares.
-                </div>
-              ) : null}
+              <div className="h-2 w-full overflow-hidden rounded-full bg-ink-600">
+                <div
+                  className="h-full bg-accent transition-[width] duration-500 ease-out"
+                  style={{ width: `${sold}%` }}
+                />
+              </div>
             </div>
 
-            {errMsg ? (
-              <div className="mt-2 break-all text-xs text-accent">{errMsg}</div>
-            ) : null}
-            {step === "done" ? (
-              <div className="mt-2 text-xs text-accent">Confirmed on-chain ✓</div>
-            ) : null}
+            {/* Divider between the ticket and the buy controls */}
+            <div className="my-6 h-px bg-ink-500/60" />
+
+            {!address ? (
+              <p className="text-ink-200">Connect a wallet to buy shares.</p>
+            ) : wrongChain ? (
+              <p className="text-accent">
+                Wallet is on the wrong network — switch to Base above to buy.
+              </p>
+            ) : (
+              <>
+                <SharesSlider
+                  count={count}
+                  max={remaining}
+                  cost={costUsdc}
+                  disabled={inFlight}
+                  onChange={setCount}
+                />
+
+                {/* EV / undersubscription hook */}
+                <div className="mt-5 rounded-lg border border-ink-500 bg-ink-800/70 p-3 font-mono text-sm">
+                  {sliceLabel ? (
+                    <>
+                      <span className="text-ink-300">if ticket wins, your slice =</span>{" "}
+                      <span className="text-accent">{sliceLabel}</span>{" "}
+                      <span className="text-ink-300">of the prize</span>
+                      <div className="mt-1 text-[11px] text-ink-300">
+                        (current ticket {sold}/100 sold — undersubscription amplifies your payout per share)
+                      </div>
+                    </>
+                  ) : (
+                    <span className="text-ink-300">enter a count above</span>
+                  )}
+                </div>
+
+                {/* CTA — single button orchestrates approve + buy when allowance is short */}
+                <div className="mt-5">
+                  <button
+                    type="button"
+                    onClick={handleBuy}
+                    disabled={
+                      inFlight || cappedCount === 0 || insufficientBalance
+                    }
+                    className="w-full rounded-xl bg-accent px-4 py-3 font-mono text-base font-bold text-ink-900 transition disabled:opacity-50 hover:shadow-glow sm:w-auto"
+                  >
+                    {buttonLabel}
+                  </button>
+
+                  {/* Two-step progress while a buy is in flight */}
+                  {inFlight ? (
+                    <div className="mt-3 flex items-center gap-3">
+                      <div className="h-1 flex-1 overflow-hidden rounded-full bg-ink-600">
+                        <div
+                          className="h-full bg-accent transition-[width] duration-500 ease-out"
+                          style={{
+                            width:
+                              step === "approving"
+                                ? "45%"
+                                : step === "buying"
+                                  ? "100%"
+                                  : "0%",
+                          }}
+                        />
+                      </div>
+                      <div className="shrink-0 font-mono text-[11px] uppercase tracking-widest text-ink-300">
+                        confirmation {currentStep}/{totalSteps}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {insufficientBalance ? (
+                    <div className="mt-2 text-sm text-accent">
+                      Not enough USDC.
+                    </div>
+                  ) : null}
+
+                  {needsApprove && !inFlight && step !== "done" ? (
+                    <div className="mt-2 font-mono text-[11px] text-ink-300">
+                      Two wallet confirmations: 1/ approve USDC, 2/ buy shares.
+                    </div>
+                  ) : null}
+                </div>
+
+                {errMsg ? (
+                  <div className="mt-2 break-all text-xs text-accent">
+                    {errMsg}
+                  </div>
+                ) : null}
+                {step === "done" ? (
+                  <div className="mt-2 text-xs text-accent">
+                    Confirmed on-chain ✓
+                  </div>
+                ) : null}
+              </>
+            )}
           </>
         )}
       </div>
@@ -315,11 +363,66 @@ export function Buy() {
   );
 }
 
-function SectionHeader({ title }: { title: string }) {
+function TicketPicks({
+  normals,
+  bonusball,
+}: {
+  normals: number[];
+  bonusball: number;
+}) {
+  const pad = (n: number) => n.toString().padStart(2, "0");
   return (
-    <h2 className="mb-3 px-1 font-mono text-xs uppercase tracking-[0.25em] text-ink-300">
-      ▌ {title}
-    </h2>
+    <div className="flex flex-wrap items-center gap-2">
+      {normals.map((n, i) => (
+        <span
+          key={`${i}-${n}`}
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-ink-500 bg-ink-800/70 font-mono text-base font-bold text-ink-100"
+        >
+          {pad(n)}
+        </span>
+      ))}
+      <span className="mx-1 text-ink-500">·</span>
+      <span
+        className="flex h-10 w-10 items-center justify-center rounded-full bg-accent font-mono text-base font-bold text-ink-900 shadow-glow"
+        title="Bonusball"
+      >
+        {pad(bonusball)}
+      </span>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  mono,
+  accent,
+  pop,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  accent?: boolean;
+  pop?: number | string;
+}) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-widest text-ink-300">
+        {label}
+      </div>
+      <div
+        // key forces re-mount so the pop animation re-runs on value change
+        key={pop !== undefined ? String(pop) : undefined}
+        className={[
+          "mt-1 text-lg sm:text-xl font-semibold",
+          mono ? "font-mono" : "",
+          accent ? "text-accent" : "text-ink-100",
+          pop !== undefined ? "num-pop" : "",
+        ].join(" ")}
+      >
+        {value}
+      </div>
+    </div>
   );
 }
 
