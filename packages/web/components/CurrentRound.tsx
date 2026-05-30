@@ -96,14 +96,24 @@ export function CurrentRound() {
                     </div>
                   )}
                   {r.isActive ? (
-                    <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-accent">
-                      selling
+                    <span className="shrink-0 rounded bg-[#16f08a]/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-[#16f08a]">
+                      now selling
                     </span>
                   ) : null}
                 </div>
                 <div className="shrink-0 text-right font-mono text-sm">
-                  <div className="text-ink-100">{r.sold}/100</div>
-                  <div className="text-[11px] text-ink-300">
+                  <div className="flex items-center justify-end gap-2">
+                    <div className="h-1.5 w-20 overflow-hidden rounded-full bg-ink-600">
+                      <div
+                        className="h-full bg-accent transition-[width] duration-500 ease-out"
+                        style={{ width: `${r.sold}%` }}
+                      />
+                    </div>
+                    <span className="w-9 text-right text-[11px] text-ink-200">
+                      {r.sold}%
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[11px] text-ink-300">
                     {r.holders} holder{r.holders === 1 ? "" : "s"}
                   </div>
                 </div>

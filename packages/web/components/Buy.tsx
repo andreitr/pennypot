@@ -210,6 +210,10 @@ export function Buy() {
 
   return (
     <section className="relative z-10 mx-auto w-full max-w-3xl px-4 pb-8">
+      <h2 className="mb-3 px-1 font-mono text-xs uppercase tracking-[0.25em] text-ink-300">
+        ▌ Active ticket
+      </h2>
+
       <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-5 shadow-glow sm:p-7">
         {paused ? (
           <p className="text-accent">Contract is paused.</p>
@@ -463,18 +467,24 @@ function SharesSlider({
 
   return (
     <div>
-      {/* Big readout: current share count + cost — same baseline, same treatment */}
+      {/* Big readout: current share count + cost — same baseline, same treatment.
+          NumberFlow animates both as the slider is dragged. */}
       <div className="flex items-baseline justify-between gap-3 font-mono">
         <div>
-          <span className="text-4xl font-bold text-accent">{safeCount}</span>{" "}
+          <NumberFlow
+            value={safeCount}
+            className="text-4xl font-bold text-accent"
+          />{" "}
           <span className="text-sm text-ink-300">
             share{safeCount === 1 ? "" : "s"}
           </span>
         </div>
         <div className="text-right">
-          <span className="text-4xl font-bold text-accent">
-            {formatUsdc(cost, { dp: 2 })}
-          </span>{" "}
+          <NumberFlow
+            value={Number(cost) / 1e6}
+            format={{ style: "currency", currency: "USD" }}
+            className="text-4xl font-bold text-accent"
+          />{" "}
           <span className="text-sm text-ink-300">cost</span>
         </div>
       </div>
