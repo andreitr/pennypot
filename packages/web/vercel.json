@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/buy-ticket",
-      "schedule": "* * * * *"
+      "schedule": "*/3 * * * *"
     },
     {
       "path": "/api/cron/claim-winnings",

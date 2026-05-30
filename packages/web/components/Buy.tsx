@@ -150,6 +150,14 @@ export function Buy() {
         await new Promise((r) => setTimeout(r, 500));
       }
 
+      // If this purchase filled the ticket, nudge the keeper to front the next
+      // one immediately instead of waiting for the backstop cron. Fire-and-
+      // forget: the endpoint re-checks eligibility and no-ops if it's not
+      // actually buyable.
+      if (targetSold >= CONSTS.SHARES_PER_TICKET) {
+        fetch("/api/keeper/buy-ticket", { method: "POST" }).catch(() => {});
+      }
+
       // Now refresh every wagmi read so Hero, balance, allowance, claimable,
       // and positions all update — and fire the success toast simultaneously.
       queryClient.invalidateQueries();
